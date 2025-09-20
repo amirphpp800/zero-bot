@@ -19,7 +19,7 @@
 const CONFIG = {
   // Bot token and admin IDs are read from env: env.BOT_TOKEN (required), env.ADMIN_ID or env.ADMIN_IDS
   BOT_NAME: 'ربات آپلود',
-  BOT_VERSION: '3.1',
+  BOT_VERSION: '4.0',
   DEFAULT_CURRENCY: 'سکه',
   SERVICE_TOGGLE_KEY: 'settings:service_enabled',
   BASE_STATS_KEY: 'stats:base',
@@ -75,6 +75,145 @@ const CONFIG = {
 };
 
 // صفحات فانکشنز env: { BOT_KV }
+
+// WireGuard: group availability by country with capacity (max_users)
+function groupWgAvailabilityByCountry(list) {
+  const map = {};
+  for (const e of Array.isArray(list) ? list : []) {
+    const country = String(e.country || '').trim() || 'نامشخص';
+    const flag = e.flag || '🌐';
+    const max = Number(e.max_users || 0);
+    const used = Number(e.used_count || 0);
+    const hasCap = (max === 0) || (used < max);
+    if (!map[country]) map[country] = { count: 0, flag };
+    if (hasCap) map[country].count += 1;
+    if (!map[country].flag && flag) map[country].flag = flag;
+  }
+  return map;
+}
+
+// WireGuard: pick a random endpoint for a given country that has capacity
+function pickWgEndpointWithCapacity(list, country) {
+  const arr = (Array.isArray(list) ? list : []).map((e, i) => ({ ...e, __idx: i }))
+    .filter(e => String(e.country || '') === String(country || ''))
+    .filter(e => Number(e.max_users || 0) === 0 || Number(e.used_count || 0) < Number(e.max_users || 0));
+  if (!arr.length) return null;
+  const r = Math.floor(Math.random() * arr.length);
+  return arr[r];
+}
+
+// Simple Web Admin page for WireGuard Endpoints management
+function renderWgAdminPage(settings, notice = '') {
+  try {
+    const eps = Array.isArray(settings?.wg_endpoints) ? settings.wg_endpoints : [];
+    const rows = eps.map((e, i) => (
+      `<tr>
+         <td>${i + 1}</td>
+         <td><code>${e.hostport || ''}</code></td>
+         <td>${e.country || ''}</td>
+         <td>${e.flag || ''}</td>
+         <td>${Number(e.used_count||0)} / ${Number(e.max_users||0) === 0 ? '∞' : Number(e.max_users||0)}</td>
+         <td>
+           <form method="post" style="margin:0;">
+             <input type="hidden" name="action" value="del" />
+             <input type="hidden" name="idx" value="${i}" />
+             <button type="submit">حذف</button>
+           </form>
+         </td>
+       </tr>`
+    )).join('');
+    const html = `<!doctype html>
+<html lang="fa" dir="rtl"><head><meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>مدیریت Endpoint های WireGuard</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Vazirmatn:wght@300;400;600&display=swap');
+  :root { --bg: #0f172a; --card: rgba(255,255,255,0.08); --text: #e5e7eb; --sub:#94a3b8; --ok:#34d399; --warn:#fbbf24; --bad:#f87171; }
+  *{ box-sizing:border-box; }
+  body{ margin:0; font-family:'Vazirmatn',sans-serif; background:#000; color:var(--text); min-height:100vh; display:flex; align-items:center; justify-content:center; padding:24px; }
+  .container{ width:100%; max-width:900px; }
+  header{ text-align:center; margin-bottom:24px; }
+  h1{ font-weight:600; margin:0 0 6px; }
+  p{ margin:0; color:var(--sub); }
+  .grid{ display:grid; grid-template-columns:1fr; gap:16px; }
+  .card{ background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.12); border-radius:16px; padding:16px; backdrop-filter: blur(10px); box-shadow:0 10px 30px rgba(0,0,0,0.6); }
+  .notice{ color:#34d399; margin:0 0 10px; }
+  table{ width:100%; border-collapse:collapse; }
+  th,td{ border:1px solid rgba(255,255,255,0.12); padding:8px; text-align:left; }
+  code{ background:rgba(255,255,255,0.08); padding:2px 4px; border-radius:4px; }
+  form .row{ display:flex; gap:8px; flex-wrap:wrap; }
+  textarea,input,button{ width:100%; border-radius:10px; border:1px solid rgba(255,255,255,0.2); background:rgba(255,255,255,0.06); color:#fff; padding:8px 10px; }
+  button{ background:#3b82f6; border:0; cursor:pointer; width:auto; }
+</style></head>
+<body>
+ <main class="container">
+  <header>
+    <h1>مدیریت Endpoint های WireGuard</h1>
+    <p>افزودن/حذف Endpoint ها — تغییرات بلافاصله در ربات اعمال می‌شود</p>
+  </header>
+  <section class="card">
+    ${notice ? `<div class="notice">${notice}</div>` : ''}
+    <h2 style="margin-top:0;">افزودن Endpoint ها</h2>
+    <form method="post">
+      <input type="hidden" name="action" value="add" />
+      <p><label>لیست IP:PORT (هر خط یک مورد)<br/>
+        <textarea name="hostports" rows="6" placeholder="1.2.3.4:51820"></textarea>
+      </label></p>
+      <div class="row">
+        <label style="flex:1 1 50%">کشور<br/><input name="country" placeholder="آمریکا" /></label>
+        <label style="flex:1 1 50%">پرچم<br/><input name="flag" placeholder="🇺🇸" /></label>
+      </div>
+      <div class="row">
+        <label style="flex:1 1 50%">حداکثر کاربران هر Endpoint (0=نامحدود)<br/><input name="max_users" placeholder="0" /></label>
+      </div>
+      <p><button type="submit">ثبت</button></p>
+    </form>
+  </section>
+  <section class="card">
+    <h2 style="margin-top:0;">فهرست Endpoint ها</h2>
+    <table>
+      <thead><tr><th>#</th><th>Host:Port</th><th>کشور</th><th>پرچم</th><th>استفاده/حداکثر</th><th>اقدام</th></tr></thead>
+      <tbody>${rows || ''}</tbody>
+    </table>
+  </section>
+ </main>
+</body></html>`;
+    return html;
+  } catch (e) {
+    return '<!doctype html><html><body>خطا در ساخت صفحه</body></html>';
+  }
+}
+
+// Build a paginated keyboard for deleting unassigned DNS IPs in a country
+async function buildDnsDeleteListKb(env, version, country, page = 1) {
+  const prefix = dnsPrefix(version);
+  const list = await env.BOT_KV.list({ prefix, limit: 1000 });
+  const ips = [];
+  for (const k of list.keys) {
+    const v = await kvGet(env, k.name);
+    if (v && !v.assigned_to && String(v.country || '') === String(country || '')) ips.push(v.ip);
+  }
+  ips.sort();
+  const per = 8;
+  const totalPages = Math.max(1, Math.ceil(ips.length / per));
+  const p = Math.min(Math.max(1, Number(page || 1)), totalPages);
+  const start = (p - 1) * per;
+  const chunk = ips.slice(start, start + per);
+  const rows = chunk.map(ip => ([{ text: ip, callback_data: `adm_dns_del_ip:${version}:${ip}:${country}` }]));
+  // Nav
+  if (totalPages > 1) {
+    const prev = p > 1 ? p - 1 : totalPages;
+    const next = p < totalPages ? p + 1 : 1;
+    rows.push([
+      { text: '◀️', callback_data: `adm_dns_list:${version}:${prev}:${country}` },
+      { text: `📄 ${p}/${totalPages}`, callback_data: 'noop' },
+      { text: '▶️', callback_data: `adm_dns_list:${version}:${next}:${country}` }
+    ]);
+  }
+  rows.push([{ text: '🔙 بازگشت', callback_data: 'adm_dns_remove' }]);
+  rows.push([{ text: '🏠 منوی اصلی ربات', callback_data: 'back_main' }]);
+  return kb(rows);
+}
 
 // Deliver custom button content to user with payment check
 async function deliverCustomButtonToUser(env, uid, chat_id, id) {
@@ -786,6 +925,30 @@ function newToken(size = 26) {
 }
 function htmlEscape(s) { return String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c])); }
 
+// WireGuard helpers: generate a valid-looking base64 private key (32 bytes)
+function bytesToBase64(bytes) {
+  let bin = '';
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  // btoa is available in CF Workers/JS runtime
+  return btoa(bin);
+}
+function generateWgPrivateKey() {
+  const buf = new Uint8Array(32);
+  crypto.getRandomValues(buf);
+  return bytesToBase64(buf);
+}
+
+// Generate a valid random filename (<=12 chars, [A-Za-z0-9_])
+function genWgFilename() {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_';
+  let s = 'wg_';
+  const remain = 10 - s.length; // ensure total <= 12
+  for (let i = 0; i < remain; i++) {
+    s += alphabet.charAt(Math.floor(Math.random() * alphabet.length));
+  }
+  return s;
+}
+
 // IP validators
 function isIPv4(ip) {
   const m = String(ip || '').trim().match(/^(25[0-5]|2[0-4]\d|[01]?\d?\d)(\.(25[0-5]|2[0-4]\d|[01]?\d?\d)){3}$/);
@@ -813,14 +976,31 @@ function mainMenuInlineKb() {
   return kb([[{ text: '🏠 منوی اصلی', callback_data: 'back_main' }]]);
 }
 
+// Get current support URL from settings
+async function getSupportUrl(env) {
+  try {
+    const s = await getSettings(env);
+    return s?.support_url || 'https://t.me/NeoDebug';
+  } catch { return 'https://t.me/NeoDebug'; }
+}
+
+// Build a keyboard with Support and Main Menu buttons using current settings
+async function supportInlineKb(env) {
+  const url = await getSupportUrl(env);
+  return kb([
+    [{ text: 'ارتباط با پشتیبانی', url }],
+    [{ text: '🏠 منوی اصلی', callback_data: 'back_main' }]
+  ]);
+}
+
 // Send a standard WIP (in development) message
 async function sendWip(env, chat_id, feature = 'این بخش') {
-  try { await tgSendMessage(env, chat_id, `🔧 ${feature} درحال توسعه است.`, mainMenuInlineKb()); } catch {}
+  try { await tgSendMessage(env, chat_id, `🔧 ${feature} درحال توسعه است.`, await supportInlineKb(env)); } catch {}
 }
 
 // Send a standard not-available message
 async function sendNotAvailable(env, chat_id, note = '❌ در حال حاضر موجود نیست.') {
-  try { await tgSendMessage(env, chat_id, note, mainMenuInlineKb()); } catch {}
+  try { await tgSendMessage(env, chat_id, note, await supportInlineKb(env)); } catch {}
 }
 
 // ------------------ Custom purchasable buttons helpers ------------------ //
@@ -926,6 +1106,15 @@ async function getOvpnPrice(env) {
     if (s && s.ovpn_price_coins != null) return Number(s.ovpn_price_coins);
   } catch {}
   return Number(CONFIG.OVPN_PRICE_COINS || 5);
+}
+
+// Get DNS price from settings with fallback
+async function getDnsPrice(env) {
+  try {
+    const s = await getSettings(env);
+    if (s && s.dns_price_coins != null) return Number(s.dns_price_coins);
+  } catch {}
+  return Number(CONFIG.DNS_PRICE_COINS || 2);
 }
 
 // آیکون نوع فایل
@@ -1221,11 +1410,12 @@ async function onMessage(msg, env) {
       const blocked = await isUserBlocked(env, uid);
       if (blocked) {
         const s = await getSettings(env);
-        const url = s?.support_url || 'https://t.me/ZERO_JK1';
+        const url = s?.support_url || 'https://t.me/NeoDebug';
         const kbSupport = kb([[{ text: 'ارتباط با پشتیبانی', url }]]);
         await tgSendMessage(env, chat_id, '⛔️ دسترسی شما به ربات مسدود شده است. برای رفع مشکل با پشتیبانی تماس بگیرید.', kbSupport);
         return;
       }
+      // (moved WG filename handler below)
     } catch {}
 
     // If update mode is on, block non-admin users globally
@@ -1243,6 +1433,64 @@ async function onMessage(msg, env) {
 
     // دستورات متنی
     const text = msg.text || msg.caption || '';
+    // Fetch state for WG filename flow (avoid name clash with later 'state')
+    const st = await getUserState(env, uid);
+    // User: WireGuard — ask for filename and send .conf (by country, random endpoint)
+    if (st?.step === 'ps_wg_name' && (typeof st?.ep_idx === 'number' || st?.country)) {
+      const name = String(text || '').trim();
+      const valid = /^[A-Za-z0-9_]{1,12}$/.test(name);
+      if (!valid) {
+        await tgSendMessage(env, chat_id, '❌ نام نامعتبر است\n✔️ فقط حروف/اعداد/زیرخط و حداکثر ۱۲ کاراکتر\n⛔️ کاراکترهای غیرمجاز مانند - @ # $ مجاز نیستند\nلطفاً دوباره ارسال کنید:');
+        return;
+      }
+      const s2 = await getSettings(env);
+      const list = Array.isArray(s2?.wg_endpoints) ? s2.wg_endpoints : [];
+      let ep = null;
+      let idx = -1;
+      if (st.country) {
+        const pick = pickWgEndpointWithCapacity(list, st.country);
+        if (!pick) { await clearUserState(env, uid); await tgSendMessage(env, chat_id, '❌ در این لوکیشن ظرفیت آزاد موجود نیست.'); return; }
+        ep = pick; idx = Number(pick.__idx);
+      } else {
+        idx = Number(st.ep_idx);
+        if (!(idx >= 0 && idx < list.length)) { await clearUserState(env, uid); await tgSendMessage(env, chat_id, '❌ Endpoint نامعتبر.'); return; }
+        ep = list[idx];
+      }
+      const d = s2.wg_defaults || {};
+      const priv = generateWgPrivateKey();
+      const lines = [];
+      lines.push('[Interface]');
+      lines.push(`PrivateKey = ${priv}`);
+      if (d.address) lines.push(`Address = ${d.address}`);
+      if (d.dns) lines.push(`DNS = ${d.dns}`);
+      if (d.mtu) lines.push(`MTU = ${d.mtu}`);
+      if (d.listen_port) lines.push(`ListenPort = ${d.listen_port}`);
+      lines.push('');
+      lines.push('[Peer]');
+      if (d.allowed_ips) lines.push(`AllowedIPs = ${d.allowed_ips}`);
+      if (typeof d.persistent_keepalive === 'number' && d.persistent_keepalive >= 1 && d.persistent_keepalive <= 99) {
+        lines.push(`PersistentKeepalive = ${d.persistent_keepalive}`);
+      }
+      lines.push(`Endpoint = ${ep.hostport}`);
+      const cfg = lines.join('\n');
+      const filename = `${name}.conf`;
+      try {
+        const blob = new Blob([cfg], { type: 'text/plain' });
+        await tgSendDocument(env, chat_id, { blob, filename }, { caption: `📄 فایل کانفیگ WireGuard (${ep.country || ''})` });
+      } catch (e) {
+        console.error('tgSendDocument wg conf error', e);
+        await tgSendMessage(env, chat_id, `⚠️ ارسال فایل ناموفق بود. می‌توانید متن زیر را ذخیره کنید با نام <code>${filename}</code>:
+<pre>${htmlEscape(cfg)}</pre>`);
+      }
+      if (idx >= 0) {
+        s2.wg_endpoints[idx] = s2.wg_endpoints[idx] || {};
+        const used = Number(s2.wg_endpoints[idx].used_count || 0) + 1;
+        s2.wg_endpoints[idx].used_count = used;
+        await setSettings(env, s2);
+      }
+      await clearUserState(env, uid);
+      return;
+    }
     // Admin: /who <user_id>
     if (text.startsWith('/who')) {
       if (!isAdminUser(env, uid)) { await tgSendMessage(env, chat_id, 'این دستور فقط برای مدیران است.'); return; }
@@ -1655,6 +1903,109 @@ async function onMessage(msg, env) {
       }
       // Admin flows
       if (isAdminUser(env, uid)) {
+        // Admin: change support URL/ID
+        if (state?.step === 'adm_support_url') {
+          let val = String(text || '').trim();
+          if (!val) { await tgSendMessage(env, chat_id, '❌ مقدار نامعتبر است. دوباره ارسال کنید یا /update برای لغو.'); return; }
+          let url = '';
+          if (/^https?:\/\//i.test(val)) url = val;
+          else if (val.startsWith('@')) url = `https://t.me/${val.replace(/^@/, '')}`;
+          else url = `https://t.me/${val}`;
+          const s = await getSettings(env);
+          s.support_url = url;
+          await setSettings(env, s);
+          await clearUserState(env, uid);
+          await tgSendMessage(env, chat_id, `✅ آدرس پشتیبانی ثبت شد: ${url}`, mainMenuInlineKb());
+          return;
+        }
+        // Admin: set default prices (OpenVPN/DNS)
+        if (state?.step === 'adm_set_price' && state?.key) {
+          const amount = Number(String(text || '').replace(/[^0-9]/g, ''));
+          if (!amount && amount !== 0) { await tgSendMessage(env, chat_id, 'عدد نامعتبر است. یک مقدار عددی ارسال کنید:'); return; }
+          const s = await getSettings(env);
+          if (state.key === 'ovpn') s.ovpn_price_coins = amount;
+          if (state.key === 'dns') s.dns_price_coins = amount;
+          await setSettings(env, s);
+          await clearUserState(env, uid);
+          await tgSendMessage(env, chat_id, '✅ قیمت ذخیره شد.', mainMenuInlineKb());
+          return;
+        }
+        // Admin: Basic settings — card number
+        if (state?.step === 'adm_card_number') {
+          const raw = String(text || '').trim();
+          const normalized = raw.replace(/[^0-9\s]/g, '');
+          if (!/^[0-9\s]{8,30}$/.test(normalized)) { await tgSendMessage(env, chat_id, '❌ شماره کارت نامعتبر است. فقط ارقام و فاصله مجاز است. دوباره ارسال کنید:'); return; }
+          const s = await getSettings(env);
+          s.card_info = s.card_info || {};
+          s.card_info.card_number = normalized;
+          await setSettings(env, s);
+          await clearUserState(env, uid);
+          await tgSendMessage(env, chat_id, '✅ شماره کارت ذخیره شد.', mainMenuInlineKb());
+          return;
+        }
+        // Admin: Basic settings — card holder name
+        if (state?.step === 'adm_card_name') {
+          const name = String(text || '').trim();
+          if (!name || name.length < 2) { await tgSendMessage(env, chat_id, '❌ نام نامعتبر است. دوباره ارسال کنید:'); return; }
+          const s = await getSettings(env);
+          s.card_info = s.card_info || {};
+          s.card_info.holder_name = name;
+          await setSettings(env, s);
+          await clearUserState(env, uid);
+          await tgSendMessage(env, chat_id, '✅ نام دارنده کارت ذخیره شد.', mainMenuInlineKb());
+          return;
+        }
+        // Admin: Plans — add
+        if (state?.step === 'adm_plan_add_coins') {
+          const coins = Number(String(text || '').replace(/[^0-9]/g, ''));
+          if (!coins || coins <= 0) { await tgSendMessage(env, chat_id, '❌ مقدار نامعتبر است. یک عدد مثبت ارسال کنید:'); return; }
+          await setUserState(env, uid, { step: 'adm_plan_add_price', coins });
+          await tgSendMessage(env, chat_id, 'برچسب قیمت پلن جدید را ارسال کنید (مثلاً ۱۵٬۰۰۰ تومان):');
+          return;
+        }
+        if (state?.step === 'adm_plan_add_price' && state?.coins) {
+          const price_label = String(text || '').trim();
+          if (!price_label) { await tgSendMessage(env, chat_id, '❌ برچسب نامعتبر است. دوباره ارسال کنید:'); return; }
+          const s = await getSettings(env);
+          const plans = Array.isArray(s?.plans) ? s.plans : [];
+          const id = 'p' + Date.now();
+          plans.push({ id, coins: Number(state.coins), price_label });
+          s.plans = plans;
+          await setSettings(env, s);
+          await clearUserState(env, uid);
+          await tgSendMessage(env, chat_id, '✅ پلن افزوده شد.', mainMenuInlineKb());
+          return;
+        }
+        // Admin: Plans — edit coins
+        if (state?.step === 'adm_plan_edit_coins' && typeof state?.idx === 'number') {
+          const coins = Number(String(text || '').replace(/[^0-9]/g, ''));
+          if (!coins || coins <= 0) { await tgSendMessage(env, chat_id, '❌ مقدار نامعتبر است. یک عدد مثبت ارسال کنید:'); return; }
+          const s = await getSettings(env);
+          const plans = Array.isArray(s?.plans) ? s.plans : [];
+          const idx = Number(state.idx);
+          if (!(idx >= 0 && idx < plans.length)) { await clearUserState(env, uid); await tgSendMessage(env, chat_id, '❌ پلن نامعتبر.'); return; }
+          plans[idx].coins = coins;
+          s.plans = plans;
+          await setSettings(env, s);
+          await clearUserState(env, uid);
+          await tgSendMessage(env, chat_id, '✅ تعداد سکه پلن بروزرسانی شد.', mainMenuInlineKb());
+          return;
+        }
+        // Admin: Plans — edit price label
+        if (state?.step === 'adm_plan_edit_price' && typeof state?.idx === 'number') {
+          const price_label = String(text || '').trim();
+          if (!price_label) { await tgSendMessage(env, chat_id, '❌ برچسب نامعتبر است. دوباره ارسال کنید:'); return; }
+          const s = await getSettings(env);
+          const plans = Array.isArray(s?.plans) ? s.plans : [];
+          const idx = Number(state.idx);
+          if (!(idx >= 0 && idx < plans.length)) { await clearUserState(env, uid); await tgSendMessage(env, chat_id, '❌ پلن نامعتبر.'); return; }
+          plans[idx].price_label = price_label;
+          s.plans = plans;
+          await setSettings(env, s);
+          await clearUserState(env, uid);
+          await tgSendMessage(env, chat_id, '✅ برچسب قیمت پلن بروزرسانی شد.', mainMenuInlineKb());
+          return;
+        }
         // Admin: DNS add flow — addresses list
         if (state?.step === 'adm_dns_add_addresses' && state?.version) {
           const version = state.version === 'v6' ? 'v6' : 'v4';
@@ -2004,7 +2355,7 @@ async function onCallback(cb, env) {
       const blocked = await isUserBlocked(env, uid);
       if (blocked) {
         const s = await getSettings(env);
-        const url = s?.support_url || 'https://t.me/ZERO_JK1';
+        const url = s?.support_url || 'https://t.me/NeoDebug';
         const kbSupport = kb([[{ text: 'ارتباط با پشتیبانی', url }]]);
         await tgAnswerCallbackQuery(env, cb.id, 'مسدود هستید');
         await tgSendMessage(env, chat_id, '⛔️ دسترسی شما به ربات مسدود شده است. برای رفع مشکل با پشتیبانی تماس بگیرید.', kbSupport);
@@ -2145,7 +2496,7 @@ async function onCallback(cb, env) {
       const u = await getUser(env, uid);
       const bal = fmtNum(u?.balance || 0);
       const kbAcc = kb([
-        [ { text: '🆘 پشتیبانی', url: 'https://t.me/ZERO_JK1' }, { text: '🎫 ارسال تیکت', callback_data: 'ticket_new' } ],
+        [ { text: '🆘 پشتیبانی', url: 'https://t.me/NeoDebug' }, { text: '🎫 ارسال تیکت', callback_data: 'ticket_new' } ],
         [ { text: '🔙 بازگشت', callback_data: 'back_main' } ]
       ]);
       const txt = [
@@ -2260,17 +2611,99 @@ async function onCallback(cb, env) {
       return;
     }
     if (data === 'ps_wireguard') {
-      await sendWip(env, chat_id, 'سرویس وایرگارد');
+      const s = await getSettings(env);
+      const list = Array.isArray(s?.wg_endpoints) ? s.wg_endpoints : [];
+      if (!list.length) { await tgAnswerCallbackQuery(env, cb.id, 'ناموجود'); await sendNotAvailable(env, chat_id, 'هیچ Endpoint وایرگاردی ثبت نشده است.'); return; }
+      const map = groupWgAvailabilityByCountry(list);
+      const countries = Object.keys(map);
+      if (!countries.length) { await tgAnswerCallbackQuery(env, cb.id, 'ناموجود'); await sendNotAvailable(env, chat_id, 'هیچ لوکیشنی در دسترس نیست.'); return; }
+      const rows = [];
+      for (let i = 0; i < countries.length; i += 2) {
+        const c1 = countries[i];
+        const c2 = countries[i+1];
+        const f1 = map[c1].flag || '🌐';
+        const n1 = map[c1].count || 0;
+        const row = [{ text: `${f1} ${c1} — ${fmtNum(n1)}`, callback_data: `ps_wg_loc:${c1}` }];
+        if (c2) {
+          const f2 = map[c2].flag || '🌐';
+          const n2 = map[c2].count || 0;
+          row.push({ text: `${f2} ${c2} — ${fmtNum(n2)}`, callback_data: `ps_wg_loc:${c2}` });
+        }
+        rows.push(row);
+      }
+      rows.push([{ text: '🔙 بازگشت', callback_data: 'private_server' }]);
+      await tgEditMessage(env, chat_id, mid, 'WireGuard — یک لوکیشن را انتخاب کنید:', kb(rows));
       await tgAnswerCallbackQuery(env, cb.id);
+      return;
+    }
+    if (data.startsWith('ps_wg_loc:')) {
+      const country = data.split(':').slice(1).join(':');
+      await setUserState(env, uid, { step: 'ps_wg_name', country });
+      await tgAnswerCallbackQuery(env, cb.id);
+      const kbRand = kb([
+        [{ text: '🎲 نام تصادفی و ارسال', callback_data: 'ps_wg_rand' }],
+        [{ text: '🔙 بازگشت', callback_data: 'private_server' }]
+      ]);
+      await tgSendMessage(env, chat_id, '📝 لطفاً نام فایل کانفیگ را وارد کنید\n(حداکثر ۱۲ کاراکتر)\n✔️ فقط حروف/اعداد/زیرخط مجاز هستند\n⛔️ کاراکترهای غیرمجاز: - @ # $ و ...', kbRand);
+      return;
+    }
+    if (data === 'ps_wg_rand') {
+      const st = await getUserState(env, uid);
+      const name = genWgFilename();
+      const s2 = await getSettings(env);
+      const list = Array.isArray(s2?.wg_endpoints) ? s2.wg_endpoints : [];
+      let ep = null;
+      let idx = -1;
+      if (st?.country) {
+        const pick = pickWgEndpointWithCapacity(list, st.country);
+        if (!pick) { await clearUserState(env, uid); await tgAnswerCallbackQuery(env, cb.id, 'ظرفیت ندارد'); await tgSendMessage(env, chat_id, '❌ در این لوکیشن ظرفیت آزاد موجود نیست.'); return; }
+        ep = pick; idx = Number(pick.__idx);
+      } else if (typeof st?.ep_idx === 'number') {
+        idx = Number(st.ep_idx);
+        if (!(idx >= 0 && idx < list.length)) { await clearUserState(env, uid); await tgAnswerCallbackQuery(env, cb.id, 'نامعتبر'); return; }
+        ep = list[idx];
+      } else {
+        await tgAnswerCallbackQuery(env, cb.id, 'نامعتبر');
+        return;
+      }
+      const d = s2.wg_defaults || {};
+      const priv = generateWgPrivateKey();
+      const lines = [];
+      lines.push('[Interface]');
+      lines.push(`PrivateKey = ${priv}`);
+      if (d.address) lines.push(`Address = ${d.address}`);
+      if (d.dns) lines.push(`DNS = ${d.dns}`);
+      if (d.mtu) lines.push(`MTU = ${d.mtu}`);
+      if (d.listen_port) lines.push(`ListenPort = ${d.listen_port}`);
+      lines.push('');
+      lines.push('[Peer]');
+      if (d.allowed_ips) lines.push(`AllowedIPs = ${d.allowed_ips}`);
+      if (typeof d.persistent_keepalive === 'number' && d.persistent_keepalive >= 1 && d.persistent_keepalive <= 99) {
+        lines.push(`PersistentKeepalive = ${d.persistent_keepalive}`);
+      }
+      lines.push(`Endpoint = ${ep.hostport}`);
+      const cfg = lines.join('\n');
+      const filename = `${name}.conf`;
+      const blob = new Blob([cfg], { type: 'text/plain' });
+      await tgSendDocument(env, chat_id, { blob, filename }, { caption: `📄 فایل کانفیگ WireGuard (${ep.country || ''})` });
+      if (idx >= 0) {
+        s2.wg_endpoints[idx] = s2.wg_endpoints[idx] || {};
+        const used = Number(s2.wg_endpoints[idx].used_count || 0) + 1;
+        s2.wg_endpoints[idx].used_count = used;
+        await setSettings(env, s2);
+      }
+      await clearUserState(env, uid);
+      await tgAnswerCallbackQuery(env, cb.id, 'ارسال شد');
       return;
     }
     
     if (data === 'ps_dns') {
       const v4 = await countAvailableDns(env, 'v4');
       const v6 = await countAvailableDns(env, 'v6');
+      const price = await getDnsPrice(env);
       const txt = [
         '🎛 سرویس دی‌ان‌اس خصوصی',
-        `قیمت هر دی‌ان‌اس: ${fmtNum(CONFIG.DNS_PRICE_COINS)} ${CONFIG.DEFAULT_CURRENCY}`,
+        `قیمت هر دی‌ان‌اس: ${fmtNum(price)} ${CONFIG.DEFAULT_CURRENCY}`,
         `موجودی: IPv4 = ${fmtNum(v4)} | IPv6 = ${fmtNum(v6)}`,
         '',
         'نوع را انتخاب کنید:',
@@ -2312,7 +2745,7 @@ async function onCallback(cb, env) {
       const parts = data.split(':');
       const version = parts[1] === 'v6' ? 'v6' : 'v4';
       const country = parts.slice(2).join(':');
-      const price = Number(CONFIG.DNS_PRICE_COINS || 2);
+      const price = await getDnsPrice(env);
       const count = await countAvailableDnsByCountry(env, version, country);
       if (count <= 0) { await tgAnswerCallbackQuery(env, cb.id, 'ناموجود'); await sendNotAvailable(env, chat_id); return; }
       await setUserState(env, uid, { step: 'ps_dns_confirm', version, country, price });
@@ -2333,7 +2766,7 @@ async function onCallback(cb, env) {
       const st = await getUserState(env, uid);
       const version = st?.version === 'v6' ? 'v6' : 'v4';
       const country = st?.country || '';
-      const price = Number(st?.price || CONFIG.DNS_PRICE_COINS || 2);
+      const price = Number(st?.price || 0) || await getDnsPrice(env);
       if (!country) { await clearUserState(env, uid); await tgAnswerCallbackQuery(env, cb.id, 'نامعتبر'); return; }
       const avail = await countAvailableDnsByCountry(env, version, country);
       if (avail <= 0) { await clearUserState(env, uid); await tgAnswerCallbackQuery(env, cb.id, 'ناموجود'); await sendNotAvailable(env, chat_id); return; }
@@ -2656,15 +3089,15 @@ async function onCallback(cb, env) {
           if (!m) continue;
           rows.push([{ text: m.title, callback_data: 'adm_cbtn_item:'+id }]);
         }
-        const sortLabel = s?.market_sort === 'oldest' ? 'قدیمی→جدید' : (s?.market_sort === 'newest' ? 'جدید→قدیمی' : 'دستی');
+        const sortLabel = s?.market_sort === 'oldest' ? 'قدیم به جدید' : (s?.market_sort === 'newest' ? 'جدید به قدیم' : 'دستی');
         const mode = s?.market_sort ? s.market_sort : 'manual';
         rows.push([{ text: '➕ افزودن دکمه', callback_data: 'adm_cbtn_add' }]);
         rows.push([
           { text: `ترتیب: ${sortLabel}`, callback_data: 'noop' }
         ]);
         rows.push([
-          { text: `${mode==='oldest'?'✅ ':''}قدیمی→جدید`, callback_data: 'adm_cbtn_sort:oldest' },
-          { text: `${mode==='newest'?'✅ ':''}جدید→قدیمی`, callback_data: 'adm_cbtn_sort:newest' },
+          { text: `${mode==='oldest'?'✅ ':''}قدیم به جدید`, callback_data: 'adm_cbtn_sort:oldest' },
+          { text: `${mode==='newest'?'✅ ':''}جدید به قدیم`, callback_data: 'adm_cbtn_sort:newest' },
           { text: `${mode==='manual'?'✅ ':''}دستی`, callback_data: 'adm_cbtn_sort:manual' },
         ]);
         rows.push([{ text: '🔙 بازگشت', callback_data: 'admin' }]);
@@ -2881,17 +3314,252 @@ async function onCallback(cb, env) {
         const v4 = await countAvailableDns(env, 'v4');
         const v6 = await countAvailableDns(env, 'v6');
         const btns = [
-          [{ text: ` مدیریت دکمه‌های غیرفعال (${disabledCount})`, callback_data: 'adm_buttons' }],
-          [{ text: '📥 آپلود اوپن وی پی ان', callback_data: 'adm_ovpn_upload' }],
-          [{ text: `➕ افزودن آدرس DNS`, callback_data: 'adm_dns_add' }],
-          [{ text: `موجودی DNS — IPv4: ${fmtNum(v4)} | IPv6: ${fmtNum(v6)}`, callback_data: 'noop' }],
-          [{ text: ' بازگشت', callback_data: 'admin' }],
-          [{ text: '🏠 منوی اصلی ربات', callback_data: 'back_main' }],
+          // Row: Basic vs Advanced
+          [{ text: '⚙️ تنظیمات پایه ربات', callback_data: 'adm_basic' }, { text: '🧩 پیشرفته‌سازی', callback_data: 'adm_advanced' }],
+          // Row: Support + Disabled buttons
+          [{ text: '🆔 آیدی پشتیبانی', callback_data: 'adm_support' }, { text: `🚫 دکمه‌های غیرفعال (${disabledCount})`, callback_data: 'adm_buttons' }],
+          // Row: DNS management
+          [{ text: '➕ افزودن DNS', callback_data: 'adm_dns_add' }, { text: '🗑 حذف DNS', callback_data: 'adm_dns_remove' }],
+          // Row: OVPN upload (single action row)
+          [{ text: '📥 آپلود OVPN', callback_data: 'adm_ovpn_upload' }],
+          // Row: Back actions
+          [{ text: '🔙 بازگشت', callback_data: 'admin' }, { text: '🏠 منوی اصلی ربات', callback_data: 'back_main' }],
         ];
-        const txt = ` تنظیمات سرویس\nوضعیت سرویس: ${enabled ? 'فعال' : 'غیرفعال'}\nتعداد دکمه‌های غیرفعال: ${disabledCount}`;
+        const txt = ` تنظیمات سرویس\nوضعیت سرویس: ${enabled ? 'فعال' : 'غیرفعال'}\nموجودی DNS — IPv4: ${fmtNum(v4)} | IPv6: ${fmtNum(v6)}`;
         const kbSrv = kb(btns);
         await tgEditMessage(env, chat_id, mid, txt, kbSrv);
         await tgAnswerCallbackQuery(env, cb.id);
+        return;
+      }
+      if (data === 'adm_advanced') {
+        const rows = [
+          [{ text: 'تنظیمات قیمت‌های پیش‌فرض', callback_data: 'adm_prices' }],
+          [{ text: 'تنظیمات WireGuard', callback_data: 'adm_wg_vars' }],
+          [{ text: '🔙 بازگشت', callback_data: 'adm_service' }],
+          [{ text: '🏠 منوی اصلی ربات', callback_data: 'back_main' }],
+        ];
+        await tgEditMessage(env, chat_id, mid, 'پیشرفته سازی سرویس — یکی را انتخاب کنید:', kb(rows));
+        await tgAnswerCallbackQuery(env, cb.id);
+        return;
+      }
+      // --- Basic settings submenu ---
+      if (data === 'adm_basic') {
+        const s = await getSettings(env);
+        const cn = s?.card_info?.card_number ? `**** ${String(s.card_info.card_number).slice(-4)}` : '—';
+        const hn = s?.card_info?.holder_name || '—';
+        const plans = Array.isArray(s?.plans) && s.plans.length ? s.plans : CONFIG.PLANS;
+        const rows = [
+          [{ text: '🆔 آیدی پشتیبانی', callback_data: 'adm_support' }],
+          [{ text: `شماره کارت: ${cn}`, callback_data: 'adm_card_number' }],
+          [{ text: `نام دارنده: ${hn}`, callback_data: 'adm_card_name' }],
+          [{ text: `پلن‌های خرید سکه (${plans.length})`, callback_data: 'adm_plans' }],
+          [{ text: '🔙 بازگشت', callback_data: 'adm_service' }],
+          [{ text: '🏠 منوی اصلی ربات', callback_data: 'back_main' }],
+        ];
+        await tgEditMessage(env, chat_id, mid, 'تنظیمات پایه ربات — یک مورد را انتخاب کنید:', kb(rows));
+        await tgAnswerCallbackQuery(env, cb.id);
+        return;
+      }
+      if (data === 'adm_support') {
+        const s = await getSettings(env);
+        const cur = s?.support_url || '';
+        await setUserState(env, uid, { step: 'adm_support_url' });
+        await tgAnswerCallbackQuery(env, cb.id);
+        await tgSendMessage(env, chat_id, `آیدی یا لینک پشتیبانی فعلی: ${cur || '—'}\nنمونه مجاز: @YourSupport یا https://t.me/YourSupport\nمقدار جدید را ارسال کنید:`);
+        return;
+      }
+      // --- Card info and plans management ---
+      if (data === 'adm_card_number') {
+        await setUserState(env, uid, { step: 'adm_card_number' });
+        await tgAnswerCallbackQuery(env, cb.id);
+        await tgSendMessage(env, chat_id, 'شماره کارت را ارسال کنید. فقط ارقام و فاصله مجاز است (مثال: 6219 8619 4308 4037)');
+        return;
+      }
+      if (data === 'adm_card_name') {
+        await setUserState(env, uid, { step: 'adm_card_name' });
+        await tgAnswerCallbackQuery(env, cb.id);
+        await tgSendMessage(env, chat_id, 'نام دارنده کارت را ارسال کنید (مثال: علی رضایی)');
+        return;
+      }
+      if (data === 'adm_plans') {
+        const s = await getSettings(env);
+        const plans = Array.isArray(s?.plans) && s.plans.length ? s.plans : CONFIG.PLANS;
+        const rows = [];
+        for (let i = 0; i < plans.length; i++) {
+          const p = plans[i];
+          rows.push([
+            { text: `${i + 1}) ${fmtNum(p.coins)} ${CONFIG.DEFAULT_CURRENCY} — ${p.price_label}`, callback_data: `adm_plan_edit:${i}` },
+            { text: '🗑 حذف', callback_data: `adm_plan_del:${i}` }
+          ]);
+        }
+        rows.push([{ text: '➕ افزودن پلن', callback_data: 'adm_plan_add' }]);
+        rows.push([{ text: '🔙 بازگشت', callback_data: 'adm_basic' }]);
+        rows.push([{ text: '🏠 منوی اصلی ربات', callback_data: 'back_main' }]);
+        await tgEditMessage(env, chat_id, mid, 'مدیریت پلن‌های سکه:', kb(rows));
+        await tgAnswerCallbackQuery(env, cb.id);
+        return;
+      }
+      if (data === 'adm_plan_add') {
+        await setUserState(env, uid, { step: 'adm_plan_add_coins' });
+        await tgAnswerCallbackQuery(env, cb.id);
+        await tgSendMessage(env, chat_id, 'تعداد سکه پلن جدید را ارسال کنید (فقط عدد):');
+        return;
+      }
+      if (data.startsWith('adm_plan_edit:')) {
+        const idx = Number((data.split(':')[1] || '').trim());
+        await tgAnswerCallbackQuery(env, cb.id);
+        const rows = [
+          [{ text: '✏️ ویرایش تعداد سکه', callback_data: `adm_plan_edit_coins:${idx}` }],
+          [{ text: '✏️ ویرایش برچسب قیمت', callback_data: `adm_plan_edit_price:${idx}` }],
+          [{ text: '🔙 بازگشت', callback_data: 'adm_plans' }],
+        ];
+        await tgEditMessage(env, chat_id, mid, `ویرایش پلن #${idx + 1}`, kb(rows));
+        return;
+      }
+      if (data.startsWith('adm_plan_edit_coins:')) {
+        const idx = Number((data.split(':')[1] || '').trim());
+        await setUserState(env, uid, { step: 'adm_plan_edit_coins', idx });
+        await tgAnswerCallbackQuery(env, cb.id);
+        await tgSendMessage(env, chat_id, 'تعداد سکه جدید را ارسال کنید (فقط عدد):');
+        return;
+      }
+      if (data.startsWith('adm_plan_edit_price:')) {
+        const idx = Number((data.split(':')[1] || '').trim());
+        await setUserState(env, uid, { step: 'adm_plan_edit_price', idx });
+        await tgAnswerCallbackQuery(env, cb.id);
+        await tgSendMessage(env, chat_id, 'برچسب قیمت جدید را ارسال کنید (مثلاً ۱۵٬۰۰۰ تومان):');
+        return;
+      }
+      if (data.startsWith('adm_plan_del:')) {
+        const idx = Number((data.split(':')[1] || '').trim());
+        const s = await getSettings(env);
+        const plans = Array.isArray(s?.plans) ? s.plans : (CONFIG.PLANS || []);
+        if (idx >= 0 && idx < plans.length) {
+          plans.splice(idx, 1);
+          s.plans = plans;
+          await setSettings(env, s);
+        }
+        // Refresh list
+        const rows = [];
+        for (let i = 0; i < plans.length; i++) {
+          const p = plans[i];
+          rows.push([
+            { text: `${i + 1}) ${fmtNum(p.coins)} ${CONFIG.DEFAULT_CURRENCY} — ${p.price_label}`, callback_data: `adm_plan_edit:${i}` },
+            { text: '🗑 حذف', callback_data: `adm_plan_del:${i}` }
+          ]);
+        }
+        rows.push([{ text: '➕ افزودن پلن', callback_data: 'adm_plan_add' }]);
+        rows.push([{ text: '🔙 بازگشت', callback_data: 'adm_basic' }]);
+        rows.push([{ text: '🏠 منوی اصلی ربات', callback_data: 'back_main' }]);
+        await tgEditMessage(env, chat_id, mid, 'مدیریت پلن‌های سکه:', kb(rows));
+        await tgAnswerCallbackQuery(env, cb.id, 'حذف شد');
+        return;
+      }
+      if (data === 'adm_prices') {
+        const op = await getOvpnPrice(env);
+        const dp = await getDnsPrice(env);
+        const rows = [
+          [{ text: '✏️ تغییر قیمت OpenVPN', callback_data: 'adm_price_set_ovpn' }],
+          [{ text: '✏️ تغییر قیمت DNS', callback_data: 'adm_price_set_dns' }],
+          [{ text: '🔙 بازگشت', callback_data: 'adm_advanced' }],
+          [{ text: '🏠 منوی اصلی ربات', callback_data: 'back_main' }],
+        ];
+        const txt = `تنظیم قیمت‌های پیش‌فرض\nOpenVPN: ${fmtNum(op)} ${CONFIG.DEFAULT_CURRENCY}\nDNS: ${fmtNum(dp)} ${CONFIG.DEFAULT_CURRENCY}`;
+        await tgEditMessage(env, chat_id, mid, txt, kb(rows));
+        await tgAnswerCallbackQuery(env, cb.id);
+        return;
+      }
+      if (data === 'adm_price_set_ovpn') {
+        await setUserState(env, uid, { step: 'adm_set_price', key: 'ovpn' });
+        await tgAnswerCallbackQuery(env, cb.id);
+        await tgSendMessage(env, chat_id, 'مبلغ به سکه برای OpenVPN را وارد کنید (مثلاً 5):');
+        return;
+      }
+      if (data === 'adm_price_set_dns') {
+        await setUserState(env, uid, { step: 'adm_set_price', key: 'dns' });
+        await tgAnswerCallbackQuery(env, cb.id);
+        await tgSendMessage(env, chat_id, 'مبلغ به سکه برای DNS را وارد کنید (مثلاً 2):');
+        return;
+      }
+      if (data === 'adm_wg_vars') {
+        const s = await getSettings(env);
+        const epsCount = Array.isArray(s?.wg_endpoints) ? s.wg_endpoints.length : 0;
+        const rows = [
+          [{ text: '✏️ ویرایش مقادیر پیش‌فرض', callback_data: 'adm_wg_defaults' }],
+          [{ text: `🛰 مدیریت Endpoint ها (${fmtNum(epsCount)})`, callback_data: 'adm_wg_eps' }],
+          [{ text: '🔙 بازگشت', callback_data: 'adm_advanced' }],
+          [{ text: '🏠 منوی اصلی ربات', callback_data: 'back_main' }],
+        ];
+        await tgEditMessage(env, chat_id, mid, 'WireGuard — یک بخش را انتخاب کنید:', kb(rows));
+        await tgAnswerCallbackQuery(env, cb.id);
+        return;
+      }
+      if (data === 'adm_wg_defaults') {
+        const s = await getSettings(env);
+        const d = s.wg_defaults || {};
+        const rows = [
+          [{ text: `Address: ${d.address || '-'}`, callback_data: 'adm_wg_edit:address' }],
+          [{ text: `DNS: ${d.dns || '-'}`, callback_data: 'adm_wg_edit:dns' }],
+          [{ text: `MTU: ${d.mtu ?? '-'}`, callback_data: 'adm_wg_edit:mtu' }],
+          [{ text: `ListenPort: ${d.listen_port || '(auto)'}`, callback_data: 'adm_wg_edit:listen_port' }],
+          [{ text: `AllowedIPs: ${d.allowed_ips || '-'}`, callback_data: 'adm_wg_edit:allowed_ips' }],
+          [{ text: `PersistentKeepalive: ${d.persistent_keepalive ? d.persistent_keepalive : 'خاموش'}`, callback_data: 'adm_wg_edit:persistent_keepalive' }],
+          [{ text: '🔙 بازگشت', callback_data: 'adm_wg_vars' }],
+          [{ text: '🏠 منوی اصلی ربات', callback_data: 'back_main' }],
+        ];
+        await tgEditMessage(env, chat_id, mid, 'مقادیر پیش‌فرض WireGuard — برای ویرایش یکی را انتخاب کنید:', kb(rows));
+        await tgAnswerCallbackQuery(env, cb.id);
+        return;
+      }
+      if (data.startsWith('adm_wg_edit:')) {
+        const field = data.split(':')[1];
+        await setUserState(env, uid, { step: 'adm_wg_edit', field });
+        let prompt = 'مقدار جدید را ارسال کنید:';
+        if (field === 'mtu') prompt = 'مقدار MTU را ارسال کنید (عدد) — مثال: 1360';
+        if (field === 'listen_port') prompt = 'ListenPort را ارسال کنید. برای حالت خودکار، پیام خالی یا 0 بفرستید.';
+        if (field === 'address') prompt = 'Address را ارسال کنید — مثال: 10.66.66.2/32';
+        if (field === 'dns') prompt = 'DNS را ارسال کنید — مثال: 10.202.10.10, 10.202.10.11';
+        if (field === 'allowed_ips') prompt = 'AllowedIPs را ارسال کنید — مثال: 0.0.0.0/11';
+        await tgSendMessage(env, chat_id, prompt);
+        await tgAnswerCallbackQuery(env, cb.id);
+        return;
+      }
+      if (data === 'adm_wg_eps') {
+        const s = await getSettings(env);
+        const list = Array.isArray(s?.wg_endpoints) ? s.wg_endpoints : [];
+        const rows = [];
+        for (let i = 0; i < list.length; i++) {
+          const e = list[i];
+          rows.push([{ text: `${i + 1}) ${e.flag || '🌐'} ${e.country || ''} — ${e.hostport}`, callback_data: `adm_wg_ep_del:${i}` }]);
+        }
+        rows.push([{ text: '➕ افزودن Endpoint', callback_data: 'adm_wg_ep_add' }]);
+        if (list.length) rows.push([{ text: '🧹 پاکسازی همه', callback_data: 'adm_wg_ep_clear' }]);
+        rows.push([{ text: '🔙 بازگشت', callback_data: 'adm_wg_vars' }]);
+        rows.push([{ text: '🏠 منوی اصلی ربات', callback_data: 'back_main' }]);
+        await tgEditMessage(env, chat_id, mid, 'مدیریت Endpoint های WireGuard:', kb(rows));
+        await tgAnswerCallbackQuery(env, cb.id);
+        return;
+      }
+      if (data === 'adm_wg_ep_add') {
+        await setUserState(env, uid, { step: 'adm_wg_ep_lines' });
+        await tgSendMessage(env, chat_id, 'لیست Endpoint ها را ارسال کنید (هر خط به صورت IP:PORT). سپس کشور و پرچم پرسیده می‌شود.');
+        await tgAnswerCallbackQuery(env, cb.id);
+        return;
+      }
+      if (data === 'adm_wg_ep_clear') {
+        const s = await getSettings(env);
+        s.wg_endpoints = [];
+        await setSettings(env, s);
+        await tgAnswerCallbackQuery(env, cb.id, 'پاک شد');
+        // refresh
+        const list = [];
+        const rows = [
+          [{ text: '➕ افزودن Endpoint', callback_data: 'adm_wg_ep_add' }]
+        ];
+        if (list.length) rows.push([{ text: '🧹 پاکسازی همه', callback_data: 'adm_wg_ep_clear' }]);
+        rows.push([{ text: '🔙 بازگشت', callback_data: 'adm_wg_vars' }]);
+        rows.push([{ text: '🏠 منوی اصلی ربات', callback_data: 'back_main' }]);
+        await tgEditMessage(env, chat_id, mid, 'مدیریت Endpoint های WireGuard:', kb(rows));
         return;
       }
       if (data === 'adm_dns_add') {
@@ -2902,6 +3570,74 @@ async function onCallback(cb, env) {
         ];
         await tgEditMessage(env, chat_id, mid, '➕ افزودن آدرس DNS\nنوع را انتخاب کنید:', kb(rows));
         await tgAnswerCallbackQuery(env, cb.id);
+        return;
+      }
+      if (data === 'adm_dns_remove') {
+        const rows = [
+          [ { text: 'IPv4', callback_data: 'adm_dns_remove_v4' }, { text: 'IPv6', callback_data: 'adm_dns_remove_v6' } ],
+          [ { text: '🔙 بازگشت', callback_data: 'adm_service' } ],
+          [ { text: '🏠 منوی اصلی ربات', callback_data: 'back_main' } ],
+        ];
+        await tgEditMessage(env, chat_id, mid, '🗑 حذف آدرس‌های DNS\nنوع را انتخاب کنید:', kb(rows));
+        await tgAnswerCallbackQuery(env, cb.id);
+        return;
+      }
+      if (data === 'adm_dns_remove_v4' || data === 'adm_dns_remove_v6') {
+        const version = data.endsWith('_v4') ? 'v4' : 'v6';
+        const map = await groupDnsAvailabilityByCountry(env, version);
+        const countries = Object.keys(map);
+        if (!countries.length) {
+          await tgAnswerCallbackQuery(env, cb.id, 'لیستی وجود ندارد');
+          await tgEditMessage(env, chat_id, mid, 'هیچ آدرس DNS برای حذف وجود ندارد.', kb([[{ text: '🔙 بازگشت', callback_data: 'adm_dns_remove' }]]));
+          return;
+        }
+        const rows = [];
+        for (let i = 0; i < countries.length; i += 2) {
+          const c1 = countries[i];
+          const c2 = countries[i + 1];
+          const f1 = (map[c1]?.flag) || '🌐';
+          const n1 = map[c1]?.count || 0;
+          const row = [ { text: `${f1} ${c1} — ${fmtNum(n1)}`, callback_data: `adm_dns_remove_country:${version}:${c1}` } ];
+          if (c2) {
+            const f2 = (map[c2]?.flag) || '🌐';
+            const n2 = map[c2]?.count || 0;
+            row.push({ text: `${f2} ${c2} — ${fmtNum(n2)}`, callback_data: `adm_dns_remove_country:${version}:${c2}` });
+          }
+          rows.push(row);
+        }
+        rows.push([{ text: '🔙 بازگشت', callback_data: 'adm_dns_remove' }]);
+        await tgEditMessage(env, chat_id, mid, `نسخه ${version.toUpperCase()} — کشور را برای حذف انتخاب کنید:`, kb(rows));
+        await tgAnswerCallbackQuery(env, cb.id);
+        return;
+      }
+      if (data.startsWith('adm_dns_remove_country:')) {
+        const parts = data.split(':');
+        const version = parts[1] === 'v6' ? 'v6' : 'v4';
+        const country = parts.slice(2).join(':');
+        const page = 1;
+        await tgEditMessage(env, chat_id, mid, `حذف تکی آدرس‌های DNS (${version.toUpperCase()}) — ${country}\nروی هر آی‌پی برای حذف بزنید:`, await buildDnsDeleteListKb(env, version, country, page));
+        await tgAnswerCallbackQuery(env, cb.id);
+        return;
+      }
+      if (data.startsWith('adm_dns_list:')) {
+        const m = data.split(':');
+        const version = m[1] === 'v6' ? 'v6' : 'v4';
+        const page = Number(m[2] || '1') || 1;
+        const country = m.slice(3).join(':');
+        await tgEditMessage(env, chat_id, mid, `حذف تکی آدرس‌های DNS (${version.toUpperCase()}) — ${country}\nروی هر آی‌پی برای حذف بزنید:`, await buildDnsDeleteListKb(env, version, country, page));
+        await tgAnswerCallbackQuery(env, cb.id);
+        return;
+      }
+      if (data.startsWith('adm_dns_del_ip:')) {
+        const m = data.split(':');
+        const version = m[1] === 'v6' ? 'v6' : 'v4';
+        const ip = m[2];
+        const country = m.slice(3).join(':');
+        const key = dnsPrefix(version) + ip;
+        const v = await kvGet(env, key);
+        if (v && !v.assigned_to) { await kvDel(env, key); await tgAnswerCallbackQuery(env, cb.id, 'حذف شد'); }
+        else { await tgAnswerCallbackQuery(env, cb.id, 'ناممکن'); }
+        await tgEditMessage(env, chat_id, mid, `حذف تکی آدرس‌های DNS (${version.toUpperCase()}) — ${country}\nروی هر آی‌پی برای حذف بزنید:`, await buildDnsDeleteListKb(env, version, country, 1));
         return;
       }
       if (data === 'adm_dns_add_v4' || data === 'adm_dns_add_v6') {
@@ -3293,6 +4029,12 @@ async function onCallback(cb, env) {
           '🪙 خرید سکه — انتخاب پلن، مشاهده اطلاعات پرداخت و ارسال رسید',
           '',
           'ارسال فایل (Document) — ذخیره فایل و دریافت لینک (برای مدیران در بخش آپلود پیشرفته قابل قیمت‌گذاری/محدودسازی است)',
+          '',
+          'بخش‌های مدیریت مهم:',
+          '⚙️ تنظیمات سرویس — مدیریت دکمه‌های غیرفعال، آپلود OVPN، افزودن/حذف آدرس‌های DNS، تنظیم آیدی پشتیبانی',
+          '🧩 پیشرفته سازی — تنظیم قیمت‌های پیشفرض (DNS/OVPN) و تنظیمات WireGuard',
+          'WireGuard — ویرایش مقادیر پیشفرض (Address, DNS, MTU, ListenPort, AllowedIPs, PersistentKeepalive) و مدیریت Endpoint ها',
+          'حذف DNS — حذف تکی آی‌پی‌ها به تفکیک کشور و نسخه (IPv4/IPv6)',
         ];
         await tgEditMessage(env, chat_id, mid, lines.join('\n'), kb([[{ text: '🔙 بازگشت', callback_data: 'back_main' }]]));
         await tgAnswerCallbackQuery(env, cb.id);
@@ -3680,6 +4422,25 @@ async function unassignDns(env, version, ip) {
   } catch (e) { console.error('unassignDns error', e); return false; }
 }
 
+// Delete unassigned DNS IPs by version and country, return number removed
+async function deleteDnsByCountry(env, version, country) {
+  try {
+    const prefix = dnsPrefix(version);
+    const list = await env.BOT_KV.list({ prefix, limit: 1000 });
+    let removed = 0;
+    for (const k of list.keys) {
+      const key = k.name;
+      const v = await kvGet(env, key);
+      if (!v) continue;
+      if (v.assigned_to) continue;
+      if (String(v.country || '') !== String(country || '')) continue;
+      const ok = await kvDel(env, key);
+      if (ok) removed++;
+    }
+    return removed;
+  } catch (e) { console.error('deleteDnsByCountry error', e); return 0; }
+}
+
 // Group availability by country, preserving a representative flag
 async function groupDnsAvailabilityByCountry(env, version) {
   try {
@@ -3758,10 +4519,34 @@ async function getSettings(env) {
   // Hydrate dynamic defaults so settings persist across deploys
   let changed = false;
   if (typeof s.ovpn_price_coins === 'undefined') { s.ovpn_price_coins = CONFIG.OVPN_PRICE_COINS; changed = true; }
+  if (typeof s.dns_price_coins === 'undefined') { s.dns_price_coins = CONFIG.DNS_PRICE_COINS; changed = true; }
   if (!Array.isArray(s.ovpn_locations) || !s.ovpn_locations.length) { s.ovpn_locations = CONFIG.OVPN_LOCATIONS; changed = true; }
   if (!s.ovpn_flags || typeof s.ovpn_flags !== 'object') { s.ovpn_flags = CONFIG.OVPN_FLAGS; changed = true; }
   if (!s.card_info || typeof s.card_info !== 'object') { s.card_info = CONFIG.CARD_INFO; changed = true; }
   if (!s.support_url) { s.support_url = 'https://t.me/NeoDebug'; changed = true; }
+  // WireGuard defaults hydration
+  if (!s.wg_defaults || typeof s.wg_defaults !== 'object') {
+    s.wg_defaults = {
+      address: '10.66.66.2/32',
+      dns: '10.202.10.10, 10.202.10.11',
+      mtu: 1360,
+      listen_port: '',
+      allowed_ips: '0.0.0.0/11'
+    };
+    changed = true;
+  }
+  if (!Array.isArray(s.wg_endpoints)) { s.wg_endpoints = []; changed = true; }
+  else {
+    // Hydrate missing fields on existing endpoints
+    let mutated = false;
+    for (let i = 0; i < s.wg_endpoints.length; i++) {
+      const e = s.wg_endpoints[i] || {};
+      if (typeof e.used_count === 'undefined') { e.used_count = 0; mutated = true; }
+      if (typeof e.max_users === 'undefined') { e.max_users = 0; mutated = true; }
+      s.wg_endpoints[i] = e;
+    }
+    if (mutated) changed = true;
+  }
   if (changed) { try { await setSettings(env, s); } catch {} }
   if (env) env.__settingsCache = s;
   return s;
@@ -3893,6 +4678,48 @@ async function routerFetch(request, env, ctx) {
       return await handleFileDownload(request, env);
     }
 
+    // Web Admin: WireGuard endpoints management
+    if (path === '/admin/wg') {
+      const key = url.searchParams.get('key') || '';
+      const adminKey = (env?.ADMIN_WEB_KEY || '').trim();
+      if (!adminKey || key !== adminKey) {
+        return new Response('Unauthorized', { status: 401 });
+      }
+      if (request.method === 'POST') {
+        try {
+          const ct = request.headers.get('content-type') || '';
+          if (/application\/x-www-form-urlencoded/i.test(ct)) {
+            const formData = await request.formData();
+            const action = String(formData.get('action') || '').trim();
+            const s = await getSettings(env);
+            s.wg_endpoints = Array.isArray(s.wg_endpoints) ? s.wg_endpoints : [];
+            if (action === 'add') {
+              const lines = String(formData.get('hostports') || '').split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+              const country = String(formData.get('country') || '').trim();
+              const flag = String(formData.get('flag') || '🌐').trim() || '🌐';
+              const max_users = Number(String(formData.get('max_users') || '0').replace(/[^0-9]/g, '')) || 0;
+              for (const hp of lines) {
+                s.wg_endpoints.push({ hostport: hp, country, flag, used_count: 0, max_users });
+              }
+              await setSettings(env, s);
+              return new Response(renderWgAdminPage(s, 'افزوده شد'), { headers: { 'content-type': 'text/html; charset=utf-8' } });
+            } else if (action === 'del') {
+              const idx = Number(String(formData.get('idx') || '').trim());
+              if (idx >= 0 && idx < s.wg_endpoints.length) {
+                s.wg_endpoints.splice(idx, 1);
+                await setSettings(env, s);
+                return new Response(renderWgAdminPage(s, 'حذف شد'), { headers: { 'content-type': 'text/html; charset=utf-8' } });
+              }
+              return new Response(renderWgAdminPage(s, 'ردیف نامعتبر'), { headers: { 'content-type': 'text/html; charset=utf-8' } });
+            }
+          }
+        } catch (e) { console.error('/admin/wg POST error', e); return new Response('خطا', { status: 500 }); }
+      }
+      // GET render
+      const s = await getSettings(env);
+      return new Response(renderWgAdminPage(s), { headers: { 'content-type': 'text/html; charset=utf-8' } });
+    }
+
     // Root → status page
     if (path === '/' || path === '') {
       return await handleRoot(request, env);
@@ -3932,6 +4759,13 @@ function renderStatusPage(settings, stats, envSummary = {}) {
   .ok{ background:rgba(52,211,153,0.15); color:#34d399; }
   .bad{ background:rgba(248,113,113,0.15); color:#f87171; }
   .warn{ background:rgba(251,191,36,0.15); color:#fbbf24; }
+  .wg-admin-card form{ display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .wg-admin-card input[type="password"]{ flex:1; min-width:180px; padding:6px 10px; border-radius:8px; border:1px solid rgba(255,255,255,0.2); background:rgba(255,255,255,0.06); color:#fff; }
+  .wg-admin-card button{ padding:6px 12px; border-radius:8px; border:0; background:#3b82f6; color:#fff; cursor:pointer; }
+  @media (max-width: 480px){
+    .wg-admin-card input[type="password"]{ width:100%; flex: 1 1 100%; }
+    .wg-admin-card button{ width:100%; }
+  }
 </style>
 </head>
 <body>
@@ -3964,6 +4798,14 @@ function renderStatusPage(settings, stats, envSummary = {}) {
       <div class="card stat">
         <div style="margin-bottom:6px; font-weight:600;">تعداد فایل‌ها</div>
         <div>${files.toLocaleString('fa-IR')}</div>
+      </div>
+      <div class="card stat wg-admin-card">
+        <div style="margin-bottom:10px; font-weight:600;">مدیریت Endpoint های WireGuard</div>
+        <form method="GET" action="/admin/wg">
+          <input name="key" type="password" placeholder="ADMIN_WEB_KEY" />
+          <button type="submit">بازکردن</button>
+        </form>
+        <div style="margin-top:6px; color:var(--sub); font-size:12px;">کلید وب ادمین را وارد کنید تا به صفحه مدیریت Endpoint منتقل شوید.</div>
       </div>
     </div>
   </main>
