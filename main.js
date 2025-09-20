@@ -1221,7 +1221,7 @@ async function onMessage(msg, env) {
       const blocked = await isUserBlocked(env, uid);
       if (blocked) {
         const s = await getSettings(env);
-        const url = s?.support_url || 'https://t.me/NeoDebug';
+        const url = s?.support_url || 'https://t.me/ZERO_JK1';
         const kbSupport = kb([[{ text: 'ارتباط با پشتیبانی', url }]]);
         await tgSendMessage(env, chat_id, '⛔️ دسترسی شما به ربات مسدود شده است. برای رفع مشکل با پشتیبانی تماس بگیرید.', kbSupport);
         return;
@@ -2004,7 +2004,7 @@ async function onCallback(cb, env) {
       const blocked = await isUserBlocked(env, uid);
       if (blocked) {
         const s = await getSettings(env);
-        const url = s?.support_url || 'https://t.me/NeoDebug';
+        const url = s?.support_url || 'https://t.me/ZERO_JK1';
         const kbSupport = kb([[{ text: 'ارتباط با پشتیبانی', url }]]);
         await tgAnswerCallbackQuery(env, cb.id, 'مسدود هستید');
         await tgSendMessage(env, chat_id, '⛔️ دسترسی شما به ربات مسدود شده است. برای رفع مشکل با پشتیبانی تماس بگیرید.', kbSupport);
@@ -2145,7 +2145,7 @@ async function onCallback(cb, env) {
       const u = await getUser(env, uid);
       const bal = fmtNum(u?.balance || 0);
       const kbAcc = kb([
-        [ { text: '🆘 پشتیبانی', url: 'https://t.me/NeoDebug' }, { text: '🎫 ارسال تیکت', callback_data: 'ticket_new' } ],
+        [ { text: '🆘 پشتیبانی', url: 'https://t.me/ZERO_JK1' }, { text: '🎫 ارسال تیکت', callback_data: 'ticket_new' } ],
         [ { text: '🔙 بازگشت', callback_data: 'back_main' } ]
       ]);
       const txt = [
