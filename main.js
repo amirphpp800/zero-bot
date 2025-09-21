@@ -178,6 +178,7 @@ function pickWgEndpointWithCapacity(list, country) {
 function renderWgAdminPage(settings, notice = '') {
   try {
     const eps = Array.isArray(settings?.wg_endpoints) ? settings.wg_endpoints : [];
+    const d = settings?.wg_defaults || {};
     const rows = eps.map((e, i) => (
       `<tr>
          <td>${i + 1}</td>
@@ -202,20 +203,32 @@ function renderWgAdminPage(settings, notice = '') {
   @import url('https://fonts.googleapis.com/css2?family=Vazirmatn:wght@300;400;600&display=swap');
   :root { --bg: #0f172a; --card: rgba(255,255,255,0.08); --text: #e5e7eb; --sub:#94a3b8; --ok:#34d399; --warn:#fbbf24; --bad:#f87171; }
   *{ box-sizing:border-box; }
-  body{ margin:0; font-family:'Vazirmatn',sans-serif; background:#000; color:var(--text); min-height:100vh; display:flex; align-items:center; justify-content:center; padding:24px; }
-  .container{ width:100%; max-width:900px; }
+  body{ margin:0; font-family:'Vazirmatn',sans-serif; background:#000; color:var(--text); min-height:100vh; display:flex; align-items:center; justify-content:center; padding:16px; }
+  .container{ width:100%; max-width:1100px; }
   header{ text-align:center; margin-bottom:24px; }
   h1{ font-weight:600; margin:0 0 6px; }
   p{ margin:0; color:var(--sub); }
   .grid{ display:grid; grid-template-columns:1fr; gap:16px; }
   .card{ background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.12); border-radius:16px; padding:16px; backdrop-filter: blur(10px); box-shadow:0 10px 30px rgba(0,0,0,0.6); }
   .notice{ color:#34d399; margin:0 0 10px; }
-  table{ width:100%; border-collapse:collapse; }
+  .table-wrap{ width:100%; overflow:auto; }
+  table{ width:100%; border-collapse:collapse; min-width:640px; }
   th,td{ border:1px solid rgba(255,255,255,0.12); padding:8px; text-align:left; }
   code{ background:rgba(255,255,255,0.08); padding:2px 4px; border-radius:4px; }
   form .row{ display:flex; gap:8px; flex-wrap:wrap; }
-  textarea,input,button{ width:100%; border-radius:10px; border:1px solid rgba(255,255,255,0.2); background:rgba(255,255,255,0.06); color:#fff; padding:8px 10px; }
+  textarea,input,select,button{ width:100%; border-radius:10px; border:1px solid rgba(255,255,255,0.2); background:rgba(255,255,255,0.06); color:#fff; padding:8px 10px; }
+  /* Force dark dropdown for select (Peer Public Mode) */
+  select{ background:#0b0b0b; color:#fff; }
+  select option{ background:#000; color:#fff; }
   button{ background:#3b82f6; border:0; cursor:pointer; width:auto; }
+  .tabs{ display:flex; gap:8px; margin-bottom:8px; flex-wrap:wrap; }
+  .tab{ padding:8px 12px; border-radius:10px; background:rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.12); display:inline-block; cursor:pointer; user-select:none; }
+  .tab.active{ background:#3b82f6; border-color:#60a5fa; }
+  .hidden{ display:none; }
+  @media (max-width: 640px){
+    .row > label{ flex:1 1 100% !important; }
+    table{ min-width:520px; }
+  }
 </style></head>
 <body>
  <main class="container">
@@ -225,6 +238,11 @@ function renderWgAdminPage(settings, notice = '') {
   </header>
   <section class="card">
     ${notice ? `<div class="notice">${notice}</div>` : ''}
+    <div class="tabs">
+      <div class="tab active" id="tab-btn-endpoints">Endpoints</div>
+      <div class="tab" id="tab-btn-defaults">WireGuard Defaults</div>
+    </div>
+    <div id="tab-endpoints">
     <h2 style="margin-top:0;">افزودن Endpoint ها</h2>
     <form method="post">
       <input type="hidden" name="action" value="add" />
@@ -240,15 +258,68 @@ function renderWgAdminPage(settings, notice = '') {
       </div>
       <p><button type="submit">ثبت</button></p>
     </form>
-  </section>
-  <section class="card">
+    <div class="table-wrap">
     <h2 style="margin-top:0;">فهرست Endpoint ها</h2>
     <table>
       <thead><tr><th>#</th><th>Host:Port</th><th>کشور</th><th>پرچم</th><th>استفاده/حداکثر</th><th>اقدام</th></tr></thead>
       <tbody>${rows || ''}</tbody>
     </table>
+    </div>
+    </div>
+    <div id="tab-defaults" class="hidden">
   </section>
- </main>
+  <section class="card" style="margin-top:16px;">
+    <h2 style="margin-top:0;">ویرایش پیش‌فرض‌های WireGuard</h2>
+    <form method="post">
+      <input type="hidden" name="action" value="save_defaults" />
+      <div class="row">
+        <label style="flex:1 1 50%">Address<br/><input name="address" placeholder="10.66.66.2/32" value="${d.address || ''}" /></label>
+        <label style="flex:1 1 50%">DNS<br/><input name="dns" placeholder="10.202.10.10, 10.202.10.11" value="${d.dns || ''}" /></label>
+      </div>
+      <div class="row">
+        <label style="flex:1 1 33%">MTU<br/><input name="mtu" type="number" placeholder="1360" value="${typeof d.mtu==='number'? d.mtu : ''}" /></label>
+        <label style="flex:1 1 33%">ListenPort<br/><input name="listen_port" type="number" placeholder="0 (auto)" value="${typeof d.listen_port==='number'? d.listen_port : ''}" /></label>
+        <label style="flex:1 1 33%">PersistentKeepalive<br/><input name="persistent_keepalive" type="number" placeholder="ثانیه یا خالی" value="${typeof d.persistent_keepalive==='number'? d.persistent_keepalive : ''}" /></label>
+      </div>
+      <div class="row">
+        <label style="flex:1 1 100%">AllowedIPs<br/><input name="allowed_ips" placeholder="0.0.0.0/0, ::/0" value="${d.allowed_ips || ''}" /></label>
+      </div>
+      <div class="row">
+        <label style="flex:1 1 50%">Peer Public Mode<br/>
+          <select name="peer_public_mode">
+            <option value="cloudflare" ${String(d.peer_public_mode||'cloudflare')==='cloudflare'?'selected':''}>Cloudflare</option>
+            <option value="endpoint" ${String(d.peer_public_mode||'cloudflare')==='endpoint'?'selected':''}>Auto Key (Endpoint)</option>
+            <option value="custom" ${String(d.peer_public_mode||'cloudflare')==='custom'?'selected':''}>Custom</option>
+          </select>
+        </label>
+        <label style="flex:1 1 50%">Custom PublicKey (Base64)<br/>
+          <input name="peer_public_key" placeholder="Base64" value="${d.peer_public_key || ''}" />
+        </label>
+      </div>
+      <p><button type="submit">💾 ذخیره</button></p>
+      <p style="color:#94a3b8; font-size:12px;">تنظیمات با زدن دکمه ذخیره اعمال می‌شوند. بدون ذخیره هیچ تغییری اعمال نخواهد شد.</p>
+    </form>
+    </div>
+  <script>
+    (function(){
+      const btnE = document.getElementById('tab-btn-endpoints');
+      const btnD = document.getElementById('tab-btn-defaults');
+      const tabE = document.getElementById('tab-endpoints');
+      const tabD = document.getElementById('tab-defaults');
+      function act(which){
+        if (which==='e'){
+          btnE.classList.add('active'); btnD.classList.remove('active');
+          tabE.classList.remove('hidden'); tabD.classList.add('hidden');
+        } else {
+          btnD.classList.add('active'); btnE.classList.remove('active');
+          tabD.classList.remove('hidden'); tabE.classList.add('hidden');
+        }
+      }
+      btnE && btnE.addEventListener('click', () => act('e'));
+      btnD && btnD.addEventListener('click', () => act('d'));
+    })();
+  </script>
+  </main>
 </body></html>`;
     return html;
   } catch (e) {
@@ -1865,14 +1936,15 @@ async function onMessage(msg, env) {
       }
     } catch {}
 
-    // Mandatory join check
-    const joined = await ensureJoinedChannels(env, uid, chat_id);
-    if (!joined) return; // A join prompt has been shown
-
     // دستورات متنی
     const text = msg.text || msg.caption || '';
-    // Fetch state for WG filename flow (avoid name clash with later 'state')
+    // Fetch state early (used to bypass join check for admin WG edit)
     const st = await getUserState(env, uid);
+
+    // Mandatory join check (bypass for admins and during WG admin edit step)
+    const isAdmMsg = isAdminUser(env, uid) || (st?.step === 'adm_wg_edit');
+    const joined = isAdmMsg ? true : await ensureJoinedChannels(env, uid, chat_id);
+    if (!joined) return; // A join prompt has been shown
     // User: WireGuard — ask for filename and send .conf (by country, random endpoint)
     if (st?.step === 'ps_wg_name' && (typeof st?.ep_idx === 'number' || st?.country)) {
       const name = String(text || '').trim();
@@ -4159,40 +4231,73 @@ ${flag} <b>${country}</b>
       }
       if (data === 'adm_wg_vars') {
         const s = await getSettings(env);
-        const epsCount = Array.isArray(s?.wg_endpoints) ? s.wg_endpoints.length : 0;
+        const d = s.wg_defaults || {};
+        const txt = [
+          '⚙️ پیش‌فرض‌های WireGuard (فقط نمایش):',
+          `📍 Address: ${formatWgDefaultValue('address', d.address)}`,
+          `🌐 DNS: ${formatWgDefaultValue('dns', d.dns)}`,
+          `📏 MTU: ${formatWgDefaultValue('mtu', d.mtu)}`,
+          `🔌 ListenPort: ${formatWgDefaultValue('listen_port', d.listen_port)}`,
+          `🛡 AllowedIPs: ${formatWgDefaultValue('allowed_ips', d.allowed_ips)}`,
+          `⏰ PersistentKeepalive: ${formatWgDefaultValue('persistent_keepalive', d.persistent_keepalive)}`,
+          `🔑 Custom PublicKey: ${formatWgDefaultValue('peer_public_key', d.peer_public_key)}`,
+          '',
+          '✏️ برای ویرایش به پنل وب مراجعه کنید: /admin/wg',
+        ].join('\n');
         const rows = [
-          [{ text: '✏️ ویرایش مقادیر پیش‌فرض', callback_data: 'adm_wg_defaults' }],
+          [{ text: '🔄 بروزرسانی', callback_data: 'adm_wg_refresh' }],
           [{ text: '🔙 بازگشت', callback_data: 'adm_advanced' }],
           [{ text: '🏠 منوی اصلی ربات', callback_data: 'back_main' }],
         ];
-        await tgEditMessage(env, chat_id, mid, 'پیشفرض‌های WireGuard — یکی را انتخاب کنید:', kb(rows));
+        await tgEditMessage(env, chat_id, mid, txt, kb(rows));
         await tgAnswerCallbackQuery(env, cb.id);
         return;
       }
-      if (data === 'adm_wg_defaults') {
+      if (data === 'adm_wg_refresh') {
         const s = await getSettings(env);
         const d = s.wg_defaults || {};
-        const mode = String((d.peer_public_mode || 'cloudflare')).toLowerCase();
-        
+        const txt = [
+          '⚙️ پیش‌فرض‌های WireGuard (فقط نمایش):',
+          `📍 Address: ${formatWgDefaultValue('address', d.address)}`,
+          `🌐 DNS: ${formatWgDefaultValue('dns', d.dns)}`,
+          `📏 MTU: ${formatWgDefaultValue('mtu', d.mtu)}`,
+          `🔌 ListenPort: ${formatWgDefaultValue('listen_port', d.listen_port)}`,
+          `🛡 AllowedIPs: ${formatWgDefaultValue('allowed_ips', d.allowed_ips)}`,
+          `⏰ PersistentKeepalive: ${formatWgDefaultValue('persistent_keepalive', d.persistent_keepalive)}`,
+          `🔑 Custom PublicKey: ${formatWgDefaultValue('peer_public_key', d.peer_public_key)}`,
+          '',
+          '✏️ برای ویرایش به پنل وب مراجعه کنید: /admin/wg',
+        ].join('\n');
         const rows = [
-          [{ text: `📍 Address: ${formatWgDefaultValue('address', d.address)}`, callback_data: 'adm_wg_edit:address' }],
-          [{ text: `🌐 DNS: ${formatWgDefaultValue('dns', d.dns)}`, callback_data: 'adm_wg_edit:dns' }],
-          [{ text: `📏 MTU: ${formatWgDefaultValue('mtu', d.mtu)}`, callback_data: 'adm_wg_edit:mtu' }],
-          [{ text: `🔌 ListenPort: ${formatWgDefaultValue('listen_port', d.listen_port)}`, callback_data: 'adm_wg_edit:listen_port' }],
-          [{ text: `🛡 AllowedIPs: ${formatWgDefaultValue('allowed_ips', d.allowed_ips)}`, callback_data: 'adm_wg_edit:allowed_ips' }],
-          [{ text: `⏰ PersistentKeepalive: ${formatWgDefaultValue('persistent_keepalive', d.persistent_keepalive)}`, callback_data: 'adm_wg_edit:persistent_keepalive' }],
-          [
-            { text: `${mode==='cloudflare' ? '✅ ' : ''}Cloudflare`, callback_data: 'adm_wg_mode:cloudflare' },
-            { text: `${mode==='endpoint' ? '✅ ' : ''}Auto Key`, callback_data: 'adm_wg_mode:endpoint' },
-            { text: `${mode==='custom' ? '✅ ' : ''}Custom`, callback_data: 'adm_wg_mode:custom' },
-          ],
-          [{ text: `🔑 Custom PublicKey: ${formatWgDefaultValue('peer_public_key', d.peer_public_key)}`, callback_data: 'adm_wg_edit:peer_public_key' }],
-          [{ text: '↩️ بازنشانی به پیش‌فرض‌ها', callback_data: 'adm_wg_reset' }],
-          [{ text: '🔙 بازگشت', callback_data: 'adm_wg_vars' }],
+          [{ text: '🔄 بروزرسانی', callback_data: 'adm_wg_refresh' }],
+          [{ text: '🔙 بازگشت', callback_data: 'adm_advanced' }],
           [{ text: '🏠 منوی اصلی ربات', callback_data: 'back_main' }],
         ];
-        await tgEditMessage(env, chat_id, mid, '⚙️ پیشفرض‌های WireGuard — برای ویرایش یکی را انتخاب کنید:', kb(rows));
-        await tgAnswerCallbackQuery(env, cb.id);
+        await tgEditMessage(env, chat_id, mid, txt, kb(rows));
+        await tgAnswerCallbackQuery(env, cb.id, 'به‌روز شد');
+        return;
+      }
+      if (data === 'adm_wg_defaults' || data.startsWith('adm_wg_mode:') || data === 'adm_wg_reset' || data.startsWith('adm_wg_edit:')) {
+        await tgAnswerCallbackQuery(env, cb.id, 'ویرایش فقط از طریق پنل وب امکان‌پذیر است.');
+        const s = await getSettings(env);
+        const d = s.wg_defaults || {};
+        const txt = [
+          '⚙️ پیش‌فرض‌های WireGuard (فقط نمایش):',
+          `📍 Address: ${formatWgDefaultValue('address', d.address)}`,
+          `🌐 DNS: ${formatWgDefaultValue('dns', d.dns)}`,
+          `📏 MTU: ${formatWgDefaultValue('mtu', d.mtu)}`,
+          `🔌 ListenPort: ${formatWgDefaultValue('listen_port', d.listen_port)}`,
+          `🛡 AllowedIPs: ${formatWgDefaultValue('allowed_ips', d.allowed_ips)}`,
+          `⏰ PersistentKeepalive: ${formatWgDefaultValue('persistent_keepalive', d.persistent_keepalive)}`,
+          `🔑 Custom PublicKey: ${formatWgDefaultValue('peer_public_key', d.peer_public_key)}`,
+          '',
+          '✏️ برای ویرایش به پنل وب مراجعه کنید: /admin/wg',
+        ].join('\n');
+        const rows = [
+          [{ text: '🔙 بازگشت', callback_data: 'adm_advanced' }],
+          [{ text: '🏠 منوی اصلی ربات', callback_data: 'back_main' }],
+        ];
+        await tgEditMessage(env, chat_id, mid, txt, kb(rows));
         return;
       }
       if (data.startsWith('adm_wg_mode:')) {
@@ -5966,6 +6071,37 @@ async function routerFetch(request, env, ctx) {
                 return new Response(renderWgAdminPage(s, 'حذف شد'), { headers: { 'content-type': 'text/html; charset=utf-8' } });
               }
               return new Response(renderWgAdminPage(s, 'ردیف نامعتبر'), { headers: { 'content-type': 'text/html; charset=utf-8' } });
+            } else if (action === 'save_defaults') {
+              // Persist WireGuard defaults only on explicit save
+              s.wg_defaults = s.wg_defaults || {};
+              const address = String(formData.get('address') || '').trim();
+              const dns = String(formData.get('dns') || '').trim();
+              const mtuStr = String(formData.get('mtu') || '').trim();
+              const lpStr = String(formData.get('listen_port') || '').trim();
+              const pkStr = String(formData.get('persistent_keepalive') || '').trim();
+              const allowed = String(formData.get('allowed_ips') || '').trim();
+              const mode = String(formData.get('peer_public_mode') || 'cloudflare').toLowerCase();
+              const peerKey = String(formData.get('peer_public_key') || '').trim();
+
+              // Assign string fields (allow empty -> delete)
+              s.wg_defaults.address = address || undefined;
+              s.wg_defaults.dns = dns || undefined;
+              s.wg_defaults.allowed_ips = allowed || undefined;
+              s.wg_defaults.peer_public_key = peerKey || '';
+
+              // Numeric fields
+              const mtu = Number(mtuStr.replace(/[^0-9]/g, ''));
+              s.wg_defaults.mtu = Number.isFinite(mtu) && mtu > 0 ? mtu : undefined;
+              const lp = Number(lpStr.replace(/[^0-9]/g, ''));
+              s.wg_defaults.listen_port = Number.isFinite(lp) && lp > 0 ? lp : undefined;
+              const pk = Number(pkStr.replace(/[^0-9]/g, ''));
+              s.wg_defaults.persistent_keepalive = Number.isFinite(pk) && pk > 0 ? pk : undefined;
+
+              // Mode validation
+              s.wg_defaults.peer_public_mode = ['cloudflare','endpoint','custom'].includes(mode) ? mode : 'cloudflare';
+
+              await setSettings(env, s);
+              return new Response(renderWgAdminPage(s, 'ذخیره شد'), { headers: { 'content-type': 'text/html; charset=utf-8' } });
             }
           }
         } catch (e) { console.error('/admin/wg POST error', e); return new Response('خطا', { status: 500 }); }
