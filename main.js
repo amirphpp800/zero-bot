@@ -33,6 +33,7 @@ const CONFIG = {
   TICKET_PREFIX: 'ticket:',
   DOWNLOAD_LOG_PREFIX: 'dl:',
   GIFT_PREFIX: 'gift:',
+  CLAIM_PREFIX: 'claim:',
   REDEEM_PREFIX: 'redeem:',
   REF_DONE_PREFIX: 'ref:done:',
   REF_PENDING_PREFIX: 'ref:pending:',
@@ -407,31 +408,40 @@ async function buildOvpnDeleteListKb(env) {
 // Deliver custom button content to user with payment check
 async function deliverCustomButtonToUser(env, uid, chat_id, id) {
   try {
-    const meta = await kvGet(env, CONFIG.CUSTOMBTN_PREFIX + id);
-    if (!meta || meta.disabled) { await tgSendMessage(env, chat_id, 'این مورد یافت نشد یا غیرفعال است.', mainMenuInlineKb()); return false; }
-    const price = Number(meta.price || 0);
-    const paidUsers = Array.isArray(meta.paid_users) ? meta.paid_users : [];
-    const alreadyPaid = paidUsers.includes(String(uid));
-    const users = Array.isArray(meta.users) ? meta.users : [];
-    const alreadyReceived = users.includes(String(uid));
-    const maxUsers = Number(meta.max_users || 0);
-    if (!alreadyReceived && maxUsers > 0 && users.length >= maxUsers) {
-      await tgSendMessage(env, chat_id, 'ظرفیت دریافت این مورد تکمیل شده است.', mainMenuInlineKb());
-      return false;
-    }
-    if (price > 0 && !alreadyPaid) {
-      const u = await getUser(env, String(uid));
-      if (!u || Number(u.balance || 0) < price) {
-        await tgSendMessage(env, chat_id, `برای دریافت این مورد به ${fmtNum(price)} ${CONFIG.DEFAULT_CURRENCY} نیاز دارید.`, mainMenuInlineKb());
-        return false;
+    const result = await withLock('cbtn:' + id, async () => {
+      const meta = await kvGet(env, CONFIG.CUSTOMBTN_PREFIX + id);
+      if (!meta || meta.disabled) { await tgSendMessage(env, chat_id, 'این مورد یافت نشد یا غیرفعال است.', mainMenuInlineKb()); return { ok: false }; }
+      const price = Number(meta.price || 0);
+      const paidUsers = Array.isArray(meta.paid_users) ? meta.paid_users : [];
+      const alreadyPaid = paidUsers.includes(String(uid));
+      const users = Array.isArray(meta.users) ? meta.users : [];
+      const alreadyReceived = users.includes(String(uid));
+      const maxUsers = Number(meta.max_users || 0);
+      if (!alreadyReceived && maxUsers > 0 && users.length >= maxUsers) {
+        await tgSendMessage(env, chat_id, 'ظرفیت دریافت این مورد تکمیل شده است.', mainMenuInlineKb());
+        return { ok: false };
       }
-      // charge and mark paid
-      u.balance = Number(u.balance || 0) - price;
-      await setUser(env, String(uid), u);
-      paidUsers.push(String(uid));
-      meta.paid_users = paidUsers;
+      if (price > 0 && !alreadyPaid) {
+        const u = await getUser(env, String(uid));
+        if (!u || Number(u.balance || 0) < price) {
+          await tgSendMessage(env, chat_id, `برای دریافت این مورد به ${fmtNum(price)} ${CONFIG.DEFAULT_CURRENCY} نیاز دارید.`, mainMenuInlineKb());
+          return { ok: false };
+        }
+        // charge and mark paid
+        u.balance = Number(u.balance || 0) - price;
+        await setUser(env, String(uid), u);
+        paidUsers.push(String(uid));
+        meta.paid_users = paidUsers;
+      }
+      if (!alreadyReceived) {
+        users.push(String(uid));
+        meta.users = users;
+      }
       await kvSet(env, CONFIG.CUSTOMBTN_PREFIX + id, meta);
-    }
+      return { ok: true, meta };
+    });
+    if (!result.ok) return false;
+    const meta = result.meta;
     // deliver
     const kind = meta.kind || 'document';
     if (kind === 'photo') {
@@ -441,11 +451,6 @@ async function deliverCustomButtonToUser(env, uid, chat_id, id) {
       await tgSendMessage(env, chat_id, `📄 محتوا:\n${content}`);
     } else {
       await tgSendDocument(env, chat_id, meta.file_id, { caption: `${kindIcon(kind)} ${meta.file_name || ''}` });
-    }
-    if (!alreadyReceived) {
-      users.push(String(uid));
-      meta.users = users;
-      await kvSet(env, CONFIG.CUSTOMBTN_PREFIX + id, meta);
     }
     return true;
   } catch (e) { console.error('deliverCustomButtonToUser error', e); await tgSendMessage(env, chat_id, 'خطا در ارسال محتوا.'); return false; }
@@ -466,40 +471,80 @@ function buildFileAdminKb(meta) {
 // ارسال فایل به کاربر با رعایت قوانین قیمت/محدودیت
 async function deliverFileToUser(env, uid, chat_id, token) {
   try {
-    const meta = await kvGet(env, CONFIG.FILE_PREFIX + token);
-    if (!meta || meta.disabled) {
-      await tgSendMessage(env, chat_id, 'فایل یافت نشد یا غیرفعال است.');
-      return false;
-    }
-    const users = Array.isArray(meta.users) ? meta.users : [];
-    const paidUsers = Array.isArray(meta.paid_users) ? meta.paid_users : [];
-    const maxUsers = Number(meta.max_users || 0);
-    const price = Number(meta.price || 0);
-    const isOwner = String(meta.owner_id) === String(uid);
-    const already = users.includes(String(uid));
-    const alreadyPaid = paidUsers.includes(String(uid));
-    if (!already && maxUsers > 0 && users.length >= maxUsers) {
-      await tgSendMessage(env, chat_id, 'ظرفیت دریافت این فایل تکمیل شده است.', mainMenuInlineKb());
-      return false;
-    }
-    // در صورت قیمت‌دار بودن، فقط اگر قبلاً پرداخت نشده کسر کن
-    if (price > 0 && !isOwner && !alreadyPaid) {
-      const u = await getUser(env, String(uid));
-      if (!u || Number(u.balance || 0) < price) {
-        await tgSendMessage(env, chat_id, 'موجودی شما برای دریافت فایل کافی نیست.', mainMenuInlineKb());
-        return false;
+    // Serialize capacity and payment updates to prevent race conditions
+    const updated = await withLock('file:' + token, async () => {
+      let meta = await kvGet(env, CONFIG.FILE_PREFIX + token);
+      if (!meta || meta.disabled) {
+        await tgSendMessage(env, chat_id, 'فایل یافت نشد یا غیرفعال است.');
+        return { ok: false };
       }
-      u.balance = Number(u.balance || 0) - price;
-      await setUser(env, String(uid), u);
-      paidUsers.push(String(uid));
-      meta.paid_users = paidUsers;
-      await kvSet(env, CONFIG.FILE_PREFIX + token, meta);
-    }
-    if (!already) {
-      users.push(String(uid));
-      meta.users = users;
-      await kvSet(env, CONFIG.FILE_PREFIX + token, meta);
-    }
+      const users = Array.isArray(meta.users) ? [...meta.users] : [];
+      const paidUsers = Array.isArray(meta.paid_users) ? [...meta.paid_users] : [];
+      const maxUsers = Number(meta.max_users || 0);
+      const price = Number(meta.price || 0);
+      const isOwner = String(meta.owner_id) === String(uid);
+      const uidStr = String(uid);
+      const already = users.includes(uidStr);
+      const alreadyPaid = paidUsers.includes(uidStr);
+      // Enforce capacity by deterministic claim list (first N claimants win)
+      if (!already && maxUsers > 0) {
+        const claimKey = CONFIG.CLAIM_PREFIX + token + ':' + uidStr;
+        let claim = await kvGet(env, claimKey);
+        if (!claim) {
+          claim = { uid: uidStr, ts: nowTs() };
+          await kvSet(env, claimKey, claim);
+        }
+        // Build claimant list
+        const list = await env.BOT_KV.list({ prefix: CONFIG.CLAIM_PREFIX + token + ':' });
+        const items = [];
+        for (const k of list.keys) {
+          const v = await kvGet(env, k.name);
+          if (v && v.uid) items.push(v);
+        }
+        items.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+        const winners = new Set(items.slice(0, maxUsers).map(x => String(x.uid)));
+        if (!winners.has(uidStr)) {
+          await tgSendMessage(env, chat_id, 'ظرفیت دریافت این فایل تکمیل شده است.', mainMenuInlineKb());
+          return { ok: false };
+        }
+      }
+      // Now handle payment if needed, ensuring idempotency
+      if (price > 0 && !isOwner && !alreadyPaid) {
+        const u = await getUser(env, uidStr);
+        if (!u || Number(u.balance || 0) < price) {
+          // Not enough balance: fail
+          await tgSendMessage(env, chat_id, 'موجودی شما برای دریافت فایل کافی نیست.', mainMenuInlineKb());
+          return { ok: false };
+        }
+        // Charge and mark paid
+        u.balance = Number(u.balance || 0) - price;
+        await setUser(env, uidStr, u);
+        const paid = Array.isArray(meta.paid_users) ? meta.paid_users : [];
+        if (!paid.includes(uidStr)) paid.push(uidStr);
+        meta.paid_users = paid;
+        await kvSet(env, CONFIG.FILE_PREFIX + token, meta);
+      }
+      // Finally, add user to recipients if not already
+      if (!already) {
+        const cur = Array.isArray(meta.users) ? meta.users : [];
+        if (!cur.includes(uidStr)) {
+          cur.push(uidStr);
+          meta.users = cur;
+          await kvSet(env, CONFIG.FILE_PREFIX + token, meta);
+        }
+      }
+      // If capacity is now full, hard-disable the file to avoid any further deliveries via other instances
+      const afterUsers = Array.isArray(meta.users) ? meta.users : [];
+      if (maxUsers > 0 && afterUsers.length >= maxUsers) {
+        if (!meta.disabled) {
+          meta.disabled = true;
+          await kvSet(env, CONFIG.FILE_PREFIX + token, meta);
+        }
+      }
+      return { ok: true, meta };
+    });
+    if (!updated.ok) return false;
+    const meta = updated.meta;
     // ارسال محتوا بر اساس نوع
     const kind = meta.kind || 'document';
     if (kind === 'photo') {
@@ -1007,6 +1052,24 @@ async function kvDel(env, key) {
 
 // Rate limiting for Telegram API
 const RATE_LIMITER = new Map();
+
+// Simple in-memory lock to serialize critical sections per key (best-effort within a single worker instance)
+const FILE_LOCKS = new Map();
+async function withLock(key, fn, timeoutMs = 5000) {
+  const start = Date.now();
+  while (true) {
+    if (!FILE_LOCKS.get(key)) {
+      FILE_LOCKS.set(key, true);
+      try {
+        return await fn();
+      } finally {
+        FILE_LOCKS.delete(key);
+      }
+    }
+    if (Date.now() - start > timeoutMs) throw new Error('lock_timeout_' + key);
+    await new Promise(r => setTimeout(r, 25));
+  }
+}
 
 function checkRateLimit(chatId, action = 'message') {
   const key = `${chatId}:${action}`;
@@ -1898,23 +1961,24 @@ async function handleFileDownload(request, env) {
       const isOwner = String(meta.owner_id) === String(uid);
       const already = users.includes(String(uid));
       const alreadyPaid = paidUsers.includes(String(uid));
-      if (!already && maxUsers > 0 && users.length >= maxUsers) {
-        return new Response('ظرفیت دریافت این فایل تکمیل شده است.', { status: 403 });
-      }
-      if (price > 0 && !isOwner && !alreadyPaid) {
-        // به جای کسر در این مسیر، کاربر را برای تایید به ربات هدایت کن
+      // اگر فایل محدودیت دارد، همه (غیر از مالک) باید از ربات عبور کنند
+      if (!isOwner && maxUsers > 0) {
+        // برای فایل‌های محدود، همیشه به ربات هدایت کن
         const botUser = await getBotUsername(env);
         if (botUser) {
           const deep = `https://t.me/${botUser}?start=${token}`;
           return Response.redirect(deep, 302);
         }
-        // اگر نام ربات را نداریم، با پیام خطا مواجه شویم
-        return new Response('برای دریافت این فایل ابتدا به ربات مراجعه کنید و تایید کنید.', { status: 402 });
+        return new Response('برای دریافت این فایل ابتدا به ربات مراجعه کنید.', { status: 402 });
       }
-      if (!already) {
-        users.push(String(uid));
-        meta.users = users;
-        await kvSet(env, CONFIG.FILE_PREFIX + token, meta);
+      // اگر قیمت‌دار است و پرداخت نشده، به ربات هدایت کن
+      if (!isOwner && price > 0 && !alreadyPaid) {
+        const botUser = await getBotUsername(env);
+        if (botUser) {
+          const deep = `https://t.me/${botUser}?start=${token}`;
+          return Response.redirect(deep, 302);
+        }
+        return new Response('برای دریافت این فایل ابتدا به ربات مراجعه کنید.', { status: 402 });
       }
     } catch (e) {
       console.error('pricing/limit enforcement error', e);
@@ -2345,11 +2409,18 @@ async function onMessage(msg, env) {
         await tgSendMessage(env, chat_id, '📝 عنوان دکمه را ارسال کنید:');
         return;
       }
+      // Admin upload flow (generic): allow plain text/link as a content type
+      if (isAdminUser(env, uid) && state?.step === 'adm_upload_wait_file') {
+        const tmp = { kind: 'text', text: String(text || '') };
+        await setUserState(env, uid, { step: 'adm_upload_price', tmp });
+        await tgSendMessage(env, chat_id, '💰 قیمت فایل به سکه را ارسال کنید (مثلاً 10):');
+        return;
+      }
       if (state?.step === 'giftcode_wait') {
         // Backward-compatible: treat like gift_redeem_wait
         const code = String((text||'').trim());
         const g = await kvGet(env, CONFIG.GIFT_PREFIX + code);
-        if (!g) { await tgSendMessage(env, chat_id, 'کد هدیه نامعتبر است.'); return; }
+        if (!g) { await tgSendMessage(env, chat_id, '❌ کد هدیه نامعتبر است.'); return; }
         const usedBy = Array.isArray(g.used_by) ? g.used_by : [];
         if (usedBy.includes(uid)) { await tgSendMessage(env, chat_id, 'شما قبلاً از این کد استفاده کرده‌اید.'); return; }
         const max = Number(g.max_uses || 0);
@@ -2378,7 +2449,8 @@ async function onMessage(msg, env) {
       if (isAdminUser(env, uid) && state?.step === 'adm_upload_price') {
         const amount = Number(text.replace(/[^0-9]/g, ''));
         const tmp = state.tmp || {};
-        if (!tmp.file_id) { await clearUserState(env, uid); await tgSendMessage(env, chat_id, 'خطا. دوباره تلاش کنید.'); return; }
+        // Accept media (with file_id) or plain text (kind === 'text')
+        if (!tmp.file_id && tmp.kind !== 'text') { await clearUserState(env, uid); await tgSendMessage(env, chat_id, 'خطا. دوباره تلاش کنید.'); return; }
         await setUserState(env, uid, { step: 'adm_upload_limit', tmp, price: amount >= 0 ? amount : 0 });
         await tgSendMessage(env, chat_id, '🔢 محدودیت تعداد دریافت‌کنندگان یکتا را ارسال کنید (مثلاً 2). برای بدون محدودیت 0 بفرستید:');
         return;
@@ -2414,7 +2486,7 @@ async function onMessage(msg, env) {
           price: price >= 0 ? price : 0,
           kind: tmp.kind || 'document',
           file_id: tmp.file_id,
-          file_name: tmp.file_name,
+          file_name: tmp.file_name || (tmp.kind === 'text' ? 'text' : (tmp.kind || 'file')),
           file_size: tmp.file_size,
           mime_type: tmp.mime_type,
           text: tmp.kind === 'text' ? (tmp.text || '') : undefined,
@@ -2499,7 +2571,7 @@ async function onMessage(msg, env) {
           owner_id: uid,
           kind: tmp.kind || 'document',
           file_id: tmp.file_id,
-          file_name: tmp.file_name,
+          file_name: tmp.file_name || (tmp.kind === 'text' ? 'text' : (tmp.kind || 'file')),
           file_size: tmp.file_size,
           mime_type: tmp.mime_type,
           text: tmp.kind === 'text' ? (tmp.text || '') : undefined,
