@@ -178,6 +178,37 @@ function pickWgEndpointWithCapacity(list, country) {
   return arr[r];
 }
 
+// WireGuard: random IPv4 generator from CIDR (e.g., 192.168.1.0/24)
+function ipToInt(ip) {
+  const p = String(ip || '').trim().split('.').map(x => Number(x));
+  if (p.length !== 4 || p.some(x => !Number.isInteger(x) || x < 0 || x > 255)) return null;
+  return ((p[0] << 24) >>> 0) + (p[1] << 16) + (p[2] << 8) + p[3];
+}
+function intToIp(int) {
+  int = int >>> 0;
+  return [ (int >>> 24) & 255, (int >>> 16) & 255, (int >>> 8) & 255, int & 255 ].join('.');
+}
+function randomIPv4FromCIDR(cidr) {
+  try {
+    const [ip, maskStr] = String(cidr || '').trim().split('/');
+    const mask = Number(maskStr);
+    if (!ip || !(mask >= 0 && mask <= 32)) return null;
+    const base = ipToInt(ip);
+    if (base === null) return null;
+    const hostBits = 32 - mask;
+    if (hostBits <= 0) return ip; // single IP
+    const size = (1 << hostBits) >>> 0;
+    const start = (base >>> 0) & (~((1 << hostBits) - 1)) >>> 0;
+    const end = (start + size - 1) >>> 0;
+    let minHost = start, maxHost = end;
+    if (hostBits >= 2) { minHost = start + 1; maxHost = end - 1; }
+    if (maxHost < minHost) return intToIp(start);
+    const span = (maxHost - minHost + 1) >>> 0;
+    const rnd = Math.floor(Math.random() * span);
+    return intToIp((minHost + rnd) >>> 0);
+  } catch { return null; }
+}
+
 // Simple Web Admin page for WireGuard Endpoints management
 function renderWgAdminPage(settings, notice = '') {
   try {
@@ -287,6 +318,18 @@ function renderWgAdminPage(settings, notice = '') {
       </div>
       <div class="row">
         <label style="flex:1 1 100%">AllowedIPs<br/><input name="allowed_ips" placeholder="0.0.0.0/0, ::/0" value="${d.allowed_ips || ''}" /></label>
+      </div>
+      <div class="row">
+        <label style="flex:1 1 60%">CIDR Pool برای IP تصادفی<br/>
+          <input name="cidr_pool" placeholder="10.66.0.0/16" value="${d.cidr_pool || ''}" />
+        </label>
+        <label style="flex:1 1 40%">اعمال به:
+          <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; padding-top:6px;">
+            <label style="display:flex; align-items:center; gap:6px;"><input type="checkbox" name="cidr_apply_dns" ${d.cidr_apply_dns ? 'checked' : ''}/> DNS</label>
+            <label style="display:flex; align-items:center; gap:6px;"><input type="checkbox" name="cidr_apply_address" ${d.cidr_apply_address ? 'checked' : ''}/> Address</label>
+            <label style="display:flex; align-items:center; gap:6px;"><input type="checkbox" name="cidr_apply_endpoint" ${d.cidr_apply_endpoint ? 'checked' : ''}/> Endpoint</label>
+          </div>
+        </label>
       </div>
       <div class="row">
         <label style="flex:1 1 50%">Peer Public Mode<br/>
@@ -486,27 +529,10 @@ async function deliverFileToUser(env, uid, chat_id, token) {
       const uidStr = String(uid);
       const already = users.includes(uidStr);
       const alreadyPaid = paidUsers.includes(uidStr);
-      // Enforce capacity by deterministic claim list (first N claimants win)
-      if (!already && maxUsers > 0) {
-        const claimKey = CONFIG.CLAIM_PREFIX + token + ':' + uidStr;
-        let claim = await kvGet(env, claimKey);
-        if (!claim) {
-          claim = { uid: uidStr, ts: nowTs() };
-          await kvSet(env, claimKey, claim);
-        }
-        // Build claimant list
-        const list = await env.BOT_KV.list({ prefix: CONFIG.CLAIM_PREFIX + token + ':' });
-        const items = [];
-        for (const k of list.keys) {
-          const v = await kvGet(env, k.name);
-          if (v && v.uid) items.push(v);
-        }
-        items.sort((a, b) => (a.ts || 0) - (b.ts || 0));
-        const winners = new Set(items.slice(0, maxUsers).map(x => String(x.uid)));
-        if (!winners.has(uidStr)) {
-          await tgSendMessage(env, chat_id, 'ظرفیت دریافت این فایل تکمیل شده است.', mainMenuInlineKb());
-          return { ok: false };
-        }
+      // Simple capacity check - if already at limit, reject immediately
+      if (!already && maxUsers > 0 && users.length >= maxUsers) {
+        await tgSendMessage(env, chat_id, 'ظرفیت دریافت این فایل تکمیل شده است.', mainMenuInlineKb());
+        return { ok: false };
       }
       // Now handle payment if needed, ensuring idempotency
       if (price > 0 && !isOwner && !alreadyPaid) {
@@ -531,6 +557,25 @@ async function deliverFileToUser(env, uid, chat_id, token) {
           cur.push(uidStr);
           meta.users = cur;
           await kvSet(env, CONFIG.FILE_PREFIX + token, meta);
+          
+          // Double-check: if we exceeded capacity after adding, remove this user and fail
+          if (maxUsers > 0 && cur.length > maxUsers) {
+            meta.users = cur.filter(u => u !== uidStr);
+            await kvSet(env, CONFIG.FILE_PREFIX + token, meta);
+            // Refund if payment was made
+            if (price > 0 && !isOwner) {
+              const u = await getUser(env, uidStr);
+              if (u) {
+                u.balance = Number(u.balance || 0) + price;
+                await setUser(env, uidStr, u);
+                // Remove from paid users
+                meta.paid_users = (meta.paid_users || []).filter(p => p !== uidStr);
+                await kvSet(env, CONFIG.FILE_PREFIX + token, meta);
+              }
+            }
+            await tgSendMessage(env, chat_id, 'ظرفیت دریافت این فایل تکمیل شده است.', mainMenuInlineKb());
+            return { ok: false };
+          }
         }
       }
       // If capacity is now full, hard-disable the file to avoid any further deliveries via other instances
@@ -1055,7 +1100,7 @@ const RATE_LIMITER = new Map();
 
 // Simple in-memory lock to serialize critical sections per key (best-effort within a single worker instance)
 const FILE_LOCKS = new Map();
-async function withLock(key, fn, timeoutMs = 5000) {
+async function withLock(key, fn, timeoutMs = 10000) {
   const start = Date.now();
   while (true) {
     if (!FILE_LOCKS.get(key)) {
@@ -1067,7 +1112,7 @@ async function withLock(key, fn, timeoutMs = 5000) {
       }
     }
     if (Date.now() - start > timeoutMs) throw new Error('lock_timeout_' + key);
-    await new Promise(r => setTimeout(r, 25));
+    await new Promise(r => setTimeout(r, 10));
   }
 }
 
@@ -2081,8 +2126,34 @@ async function onMessage(msg, env) {
       const lines = [];
       lines.push('[Interface]');
       lines.push(`PrivateKey = ${priv}`);
-      if (d.address) lines.push(`Address = ${d.address}`);
-      if (d.dns) lines.push(`DNS = ${d.dns}`);
+      // CIDR logic: random IP per config based on toggles
+      let endpointHostport = ep.hostport;
+      let addressLine = d.address || '';
+      let dnsLine = d.dns || '';
+      let cidrIp = null; let cidrMask = null;
+      if (d.cidr_pool && typeof d.cidr_pool === 'string') {
+        const parts = d.cidr_pool.split('/');
+        if (parts.length === 2) {
+          cidrMask = parts[1];
+          const rnd = randomIPv4FromCIDR(d.cidr_pool);
+          if (rnd) cidrIp = rnd;
+        }
+      }
+      if (cidrIp) {
+        if (d.cidr_apply_address && cidrMask) addressLine = `${cidrIp}/${cidrMask}`;
+        if (d.cidr_apply_dns) dnsLine = cidrIp;
+        if (d.cidr_apply_endpoint) {
+          const lastColon = String(ep.hostport || '').lastIndexOf(':');
+          if (lastColon > 0) {
+            const port = ep.hostport.slice(lastColon + 1);
+            endpointHostport = `${cidrIp}:${port}`;
+          } else {
+            endpointHostport = cidrIp;
+          }
+        }
+      }
+      if (addressLine) lines.push(`Address = ${addressLine}`);
+      if (dnsLine) lines.push(`DNS = ${dnsLine}`);
       if (d.mtu) lines.push(`MTU = ${d.mtu}`);
       if (d.listen_port) lines.push(`ListenPort = ${d.listen_port}`);
       lines.push('');
@@ -2095,7 +2166,7 @@ async function onMessage(msg, env) {
       if (typeof d.persistent_keepalive === 'number' && d.persistent_keepalive >= 1 && d.persistent_keepalive <= 99) {
         lines.push(`PersistentKeepalive = ${d.persistent_keepalive}`);
       }
-      lines.push(`Endpoint = ${ep.hostport}`);
+      lines.push(`Endpoint = ${endpointHostport}`);
       const cfg = lines.join('\n');
       const filename = `${name}.conf`;
       try {
@@ -6295,6 +6366,10 @@ async function routerFetch(request, env, ctx) {
               const lpStr = String(formData.get('listen_port') || '').trim();
               const pkStr = String(formData.get('persistent_keepalive') || '').trim();
               const allowed = String(formData.get('allowed_ips') || '').trim();
+              const cidrPool = String(formData.get('cidr_pool') || '').trim();
+              const cidrApplyDns = !!formData.get('cidr_apply_dns');
+              const cidrApplyAddr = !!formData.get('cidr_apply_address');
+              const cidrApplyEp = !!formData.get('cidr_apply_endpoint');
               const mode = String(formData.get('peer_public_mode') || 'cloudflare').toLowerCase();
               const peerKey = String(formData.get('peer_public_key') || '').trim();
 
@@ -6302,6 +6377,10 @@ async function routerFetch(request, env, ctx) {
               s.wg_defaults.address = address || undefined;
               s.wg_defaults.dns = dns || undefined;
               s.wg_defaults.allowed_ips = allowed || undefined;
+              s.wg_defaults.cidr_pool = cidrPool || undefined;
+              s.wg_defaults.cidr_apply_dns = cidrApplyDns || false;
+              s.wg_defaults.cidr_apply_address = cidrApplyAddr || false;
+              s.wg_defaults.cidr_apply_endpoint = cidrApplyEp || false;
               s.wg_defaults.peer_public_key = peerKey || '';
 
               // Numeric fields
