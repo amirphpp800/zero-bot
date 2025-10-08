@@ -1,5 +1,4 @@
- 
-/*
+ /*
   main.js — Cloudflare Pages Functions Worker for a Telegram bot
 
   Sections:
